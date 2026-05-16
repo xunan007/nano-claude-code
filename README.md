@@ -2,6 +2,11 @@
 
 > 基于 learn-claude-code 开发的 TypeScript 版本，底层使用 DeepSeek API。
 
+## 如何运行
+
+- 在当前目录下创建 .env 文件：`touch .env`
+- 填入 DEEPSEEK_API_KEY/DEEPSEEK_MODEL_ID/DEEPSEEK_BASE_URL
+
 ## s02 工具使用
 
 **分支：**
