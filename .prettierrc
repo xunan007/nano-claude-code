@@ -1,5 +1,6 @@
 {
     "tabWidth": 4,
     "useTabs": false,
+    "proseWrap": "never",
     "plugins": ["prettier-plugin-zh"]
 }

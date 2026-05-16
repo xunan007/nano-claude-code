@@ -7,7 +7,13 @@
 - 在当前目录下创建 .env 文件：`touch .env`
 - 填入 DEEPSEEK_API_KEY/DEEPSEEK_MODEL_ID/DEEPSEEK_BASE_URL
 
-## s02 工具使用
+## 文档说明
+
+- [message 格式转换](./doc/wiki/message%20格式转换.md)
+
+## 不同分支对应的阶段代码
+
+### s02 工具使用
 
 **分支：**
 

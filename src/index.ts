@@ -16,7 +16,10 @@ import type {
     ChatCompletionTool,
 } from "openai/resources/chat/completions";
 
+// 两种角色
 type Role = "user" | "assistant";
+
+// 三种消息类型
 
 type TextBlock = {
     type: "text";
@@ -41,13 +44,13 @@ type ContentBlock = TextBlock | ToolUseBlock | ToolResultBlock;
 type Message = {
     role: Role;
     content: string | ContentBlock[];
-    reasoningContent?: string;
+    reasoningContent?: string; // 兼容 DeepSeek 逻辑
 };
 
 type ModelResponse = {
     content: ContentBlock[];
-    reasoningContent?: string;
     stopReason: string | null;
+    reasoningContent?: string; // DeepSeek 特有
 };
 
 type AssistantMessageWithReasoning = {
@@ -61,10 +64,11 @@ type AssistantMessageParamWithReasoning =
         reasoning_content?: string;
     };
 
+// 多轮执行依赖的状态
 type LoopState = {
-    messages: Message[];
-    turnCount: number;
-    transitionReason?: "tool_result";
+    messages: Message[]; // 所有历史都写入这里
+    turnCount: number; // 当前在第几轮
+    transitionReason?: "tool_result"; // 下一轮执行的理由
 };
 
 const DEFAULT_MAX_TOKENS = 8000;
@@ -73,7 +77,7 @@ const MAX_TOOL_OUTPUT_CHARS = 50_000;
 const WORKDIR = process.cwd();
 const SYSTEM = `You are a coding agent at ${WORKDIR}. Use tools to solve tasks. Act, don't explain.`;
 
-// Read-only tools can safely run in parallel; mutating tools must be serialized.
+// 界定哪些操作是安全的
 export const CONCURRENCY_SAFE = new Set(["read_file"]);
 export const CONCURRENCY_UNSAFE = new Set(["write_file", "edit_file"]);
 
@@ -147,7 +151,7 @@ export function getStartupMessage(): string {
 }
 
 export function loadDotEnv(path = ".env"): void {
-    loadEnvFile({ path, override: true });
+    loadEnvFile({ path, override: true, quiet: true });
 }
 
 export function createInitialState(messages: Message[]): LoopState {
@@ -157,6 +161,7 @@ export function createInitialState(messages: Message[]): LoopState {
     };
 }
 
+// 防止路径逃逸
 function safePath(path: string): string {
     const resolved = resolve(WORKDIR, path);
     const rel = relative(WORKDIR, resolved);
@@ -238,6 +243,7 @@ export function runEdit(
     }
 }
 
+// 提取 block.type === "text" 的内容
 export function extractText(message: Message): string {
     if (!Array.isArray(message.content)) {
         return "";
@@ -575,7 +581,9 @@ async function createMessage(messages: Message[]): Promise<ModelResponse> {
 }
 
 export async function runOneTurn(state: LoopState): Promise<boolean> {
+    // 走 LLM 调用
     const response = await createMessage(state.messages);
+    // DeepSeek 会回传一个 reasoningContent 字段，要带上
     const assistantMessage: Message = {
         role: "assistant",
         content: response.content,
@@ -584,12 +592,13 @@ export async function runOneTurn(state: LoopState): Promise<boolean> {
         assistantMessage.reasoningContent = response.reasoningContent;
     }
     state.messages.push(assistantMessage);
-
+    // 如果不需要调用工具，loop 中断
     if (response.stopReason !== "tool_calls") {
         delete state.transitionReason;
         return false;
     }
 
+    // 有工具调用且正常返回，需要把工具的结果塞回去
     const results = executeToolCalls(response.content);
     if (results.length === 0) {
         delete state.transitionReason;
