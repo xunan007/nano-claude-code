@@ -1,0 +1,25 @@
+# 项目说明
+
+> 基于 learn-claude-code 开发的 TypeScript 版本，底层使用 DeepSeek API。
+
+## s02 工具使用
+
+**分支：**
+
+- feat/s02
+
+**功能说明：**
+
+- 完成 Agent Loop
+- 完成工具的注册
+
+**测试指令：**
+
+- 读一下 package.json 文件
+- 在 src 目录下创建 greet.ts 文件，并编写一个 greet(name) 函数
+- 修改 greet.ts，为函数新增一个文档字符串
+- 阅读 greet.ts 文件验证改动是否生效
+
+**输出示例：**
+
+参考：[s01.md](./output/s01.md)
