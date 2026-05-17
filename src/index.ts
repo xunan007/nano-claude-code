@@ -53,6 +53,19 @@ type ModelResponse = {
     reasoningContent?: string; // DeepSeek 特有
 };
 
+type PlanStatus = "pending" | "in_progress" | "completed";
+
+type PlanItem = {
+    content: string; // 这一步要做什么
+    status: PlanStatus; // 这一步现在处于什么状态
+    activeForm: string; // 当它正在进行时的描述
+};
+
+type PlanningState = {
+    items: PlanItem[];
+    roundsSinceUpdate: number; // 连续过去多少轮还没有更新计划
+};
+
 type AssistantMessageWithReasoning = {
     content: string | null;
     reasoning_content?: string;
@@ -75,11 +88,15 @@ const DEFAULT_MAX_TOKENS = 8000;
 const BASH_TIMEOUT_MS = 120_000;
 const MAX_TOOL_OUTPUT_CHARS = 50_000;
 const WORKDIR = process.cwd();
-const SYSTEM = `You are a coding agent at ${WORKDIR}. Use tools to solve tasks. Act, don't explain.`;
+const PLAN_REMINDER_INTERVAL = 3;
+const SYSTEM = `You are a coding agent at ${WORKDIR}.
+Use the todo tool for multi-step work.
+Keep exactly one step in_progress when a task has multiple steps.
+Refresh the plan as work advances. Prefer tools over prose.`;
 
 // 界定哪些操作是安全的
-export const CONCURRENCY_SAFE = new Set(["read_file"]);
-export const CONCURRENCY_UNSAFE = new Set(["write_file", "edit_file"]);
+const CONCURRENCY_SAFE = new Set(["read_file"]); // eslint-disable-line
+const CONCURRENCY_UNSAFE = new Set(["write_file", "edit_file", "todo"]); // eslint-disable-line
 
 const TOOLS: ChatCompletionTool[] = [
     {
@@ -144,22 +161,159 @@ const TOOLS: ChatCompletionTool[] = [
             },
         },
     },
+    {
+        type: "function",
+        function: {
+            name: "todo",
+            description:
+                "Rewrite the current session plan for multi-step work.",
+            parameters: {
+                type: "object",
+                properties: {
+                    items: {
+                        type: "array",
+                        items: {
+                            type: "object",
+                            properties: {
+                                content: { type: "string" },
+                                status: {
+                                    type: "string",
+                                    enum: [
+                                        "pending",
+                                        "in_progress",
+                                        "completed",
+                                    ],
+                                },
+                                activeForm: {
+                                    type: "string",
+                                    description:
+                                        "Optional present-continuous label.",
+                                },
+                            },
+                            required: ["content", "status"],
+                            additionalProperties: false,
+                        },
+                    },
+                },
+                required: ["items"],
+                additionalProperties: false,
+            },
+        },
+    },
 ];
 
-export function getStartupMessage(): string {
-    return "nano-claude-code TypeScript runtime is ready.";
-}
-
-export function loadDotEnv(path = ".env"): void {
+function loadDotEnv(path = ".env"): void {
     loadEnvFile({ path, override: true, quiet: true });
 }
 
-export function createInitialState(messages: Message[]): LoopState {
+function createInitialState(messages: Message[]): LoopState {
     return {
         messages,
         turnCount: 1,
     };
 }
+
+class TodoManager {
+    state: PlanningState = {
+        items: [],
+        roundsSinceUpdate: 0,
+    };
+    // TODO 工具执行的入口
+    update(items: unknown[]): string {
+        // 尽量让计划步骤不要太长
+        if (items.length > 12) {
+            throw new Error("Keep the session plan short (max 12 items)");
+        }
+
+        const normalized: PlanItem[] = [];
+        let inProgressCount = 0;
+
+        for (const [index, rawItem] of items.entries()) {
+            if (
+                rawItem === null ||
+                typeof rawItem !== "object" ||
+                Array.isArray(rawItem)
+            ) {
+                throw new Error(`Item ${index}: item must be an object`);
+            }
+
+            const item = rawItem as Record<string, unknown>;
+            const content = String(item.content ?? "").trim();
+            const status = String(item.status ?? "pending").toLowerCase();
+            const activeForm = String(item.activeForm ?? "").trim();
+
+            if (!content) {
+                throw new Error(`Item ${index}: content required`);
+            }
+            if (!this.isPlanStatus(status)) {
+                throw new Error(`Item ${index}: invalid status '${status}'`);
+            }
+            if (status === "in_progress") {
+                inProgressCount += 1;
+            }
+
+            normalized.push({
+                content,
+                status,
+                activeForm,
+            });
+        }
+
+        if (inProgressCount > 1) {
+            throw new Error("Only one plan item can be in_progress");
+        }
+
+        this.state.items = normalized;
+        this.state.roundsSinceUpdate = 0;
+        // 返回渲染后的计划
+        return this.render();
+    }
+
+    noteRoundWithoutUpdate(): void {
+        this.state.roundsSinceUpdate += 1;
+    }
+
+    reminder(): string | undefined {
+        if (this.state.items.length === 0) {
+            return undefined;
+        }
+        if (this.state.roundsSinceUpdate < PLAN_REMINDER_INTERVAL) {
+            return undefined;
+        }
+        return "<reminder>Refresh your current plan before continuing.</reminder>";
+    }
+
+    render(): string {
+        if (this.state.items.length === 0) {
+            return "No session plan yet.";
+        }
+
+        const lines = this.state.items.map((item) => {
+            const marker = {
+                pending: "[ ]",
+                in_progress: "[>]",
+                completed: "[x]",
+            }[item.status];
+            const activeSuffix =
+                item.status === "in_progress" && item.activeForm
+                    ? ` (${item.activeForm})`
+                    : "";
+            return `${marker} ${item.content}${activeSuffix}`;
+        });
+        const completed = this.state.items.filter(
+            (item) => item.status === "completed",
+        ).length;
+
+        lines.push(`\n(${completed}/${this.state.items.length} completed)`);
+        return lines.join("\n");
+    }
+
+    private isPlanStatus(status: string): status is PlanStatus {
+        return ["pending", "in_progress", "completed"].includes(status);
+    }
+}
+
+const TODO = new TodoManager();
 
 // 防止路径逃逸
 function safePath(path: string): string {
@@ -171,7 +325,7 @@ function safePath(path: string): string {
     return resolved;
 }
 
-export function runBash(command: string): string {
+function runBash(command: string): string {
     const dangerous = ["rm -rf /", "sudo", "shutdown", "reboot", "> /dev/"];
     if (dangerous.some((item) => command.includes(item))) {
         return "Error: Dangerous command blocked";
@@ -197,7 +351,7 @@ export function runBash(command: string): string {
     return combined ? combined.slice(0, MAX_TOOL_OUTPUT_CHARS) : "(no output)";
 }
 
-export function runRead(path: string, limit?: number): string {
+function runRead(path: string, limit?: number): string {
     try {
         const text = readFileSync(safePath(path), "utf8");
         const lines = text.split(/\r?\n/);
@@ -214,7 +368,7 @@ export function runRead(path: string, limit?: number): string {
     }
 }
 
-export function runWrite(path: string, content: string): string {
+function runWrite(path: string, content: string): string {
     try {
         const resolvedPath = safePath(path);
         mkdirSync(dirname(resolvedPath), { recursive: true });
@@ -225,11 +379,7 @@ export function runWrite(path: string, content: string): string {
     }
 }
 
-export function runEdit(
-    path: string,
-    oldText: string,
-    newText: string,
-): string {
+function runEdit(path: string, oldText: string, newText: string): string {
     try {
         const resolvedPath = safePath(path);
         const content = readFileSync(resolvedPath, "utf8");
@@ -244,7 +394,7 @@ export function runEdit(
 }
 
 // 提取 block.type === "text" 的内容
-export function extractText(message: Message): string {
+function extractText(message: Message): string {
     if (!Array.isArray(message.content)) {
         return "";
     }
@@ -290,6 +440,14 @@ function optionalNumber(
     return value;
 }
 
+function requireArray(input: Record<string, unknown>, key: string): unknown[] {
+    const value = input[key];
+    if (!Array.isArray(value)) {
+        throw new Error(`${key} must be an array`);
+    }
+    return value;
+}
+
 type ToolHandler = (input: Record<string, unknown>) => string;
 
 const TOOL_HANDLERS: Record<string, ToolHandler> = {
@@ -304,12 +462,11 @@ const TOOL_HANDLERS: Record<string, ToolHandler> = {
             requireString(input, "old_text"),
             requireString(input, "new_text"),
         ),
+    todo: (input) => TODO.update(requireArray(input, "items")),
 };
 
-export function executeToolCalls(
-    responseContent: ContentBlock[],
-): ToolResultBlock[] {
-    const results: ToolResultBlock[] = [];
+function executeToolCalls(responseContent: ContentBlock[]): ContentBlock[] {
+    const results: ContentBlock[] = [];
 
     for (const block of responseContent) {
         if (block.type !== "tool_use") {
@@ -352,7 +509,7 @@ function contentToBlocks(content: string | ContentBlock[]): ContentBlock[] {
         : [{ type: "text", text: String(content) }];
 }
 
-export function normalizeMessages(messages: Message[]): Message[] {
+function normalizeMessages(messages: Message[]): Message[] {
     const cleaned: Message[] = messages.map((message) => {
         const clean: Message = {
             role: message.role,
@@ -580,7 +737,7 @@ async function createMessage(messages: Message[]): Promise<ModelResponse> {
     return modelResponse;
 }
 
-export async function runOneTurn(state: LoopState): Promise<boolean> {
+async function runOneTurn(state: LoopState): Promise<boolean> {
     // 走 LLM 调用
     const response = await createMessage(state.messages);
     // DeepSeek 会回传一个 reasoningContent 字段，要带上
@@ -605,13 +762,29 @@ export async function runOneTurn(state: LoopState): Promise<boolean> {
         return false;
     }
 
+    // 如果用了 todo 工具，那么当前任务列表进度肯定会更新
+    if (
+        response.content.some(
+            (block) => block.type === "tool_use" && block.name === "todo",
+        )
+    ) {
+        TODO.state.roundsSinceUpdate = 0;
+    } else {
+        // 没有用 todo 的话，才需要去判断是否需要加个提醒
+        TODO.noteRoundWithoutUpdate();
+        const reminder = TODO.reminder();
+        if (reminder) {
+            results.push({ type: "text", text: reminder });
+        }
+    }
+
     state.messages.push({ role: "user", content: results });
     state.turnCount += 1;
     state.transitionReason = "tool_result";
     return true;
 }
 
-export async function agentLoop(state: LoopState): Promise<void> {
+async function agentLoop(state: LoopState): Promise<void> {
     while (await runOneTurn(state)) {
         // loop 逻辑在 runOneTurn 函数这里
     }
@@ -625,7 +798,7 @@ async function main(): Promise<void> {
 
     try {
         while (true) {
-            const query = await rl.question("\x1b[36ms02 >> \x1b[0m");
+            const query = await rl.question("\x1b[36ms03 >> \x1b[0m");
             if (["q", "exit", ""].includes(query.trim().toLowerCase())) {
                 break;
             }
