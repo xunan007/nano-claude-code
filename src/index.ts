@@ -89,6 +89,7 @@ const BASH_TIMEOUT_MS = 120_000;
 const MAX_TOOL_OUTPUT_CHARS = 50_000;
 const WORKDIR = process.cwd();
 const PLAN_REMINDER_INTERVAL = 3;
+const MESSAGE_TRACE_PATH = `debug/messages-${formatLocalTimestamp()}.json`;
 const SYSTEM = `You are a coding agent at ${WORKDIR}.
 Use the todo tool for multi-step work.
 Keep exactly one step in_progress when a task has multiple steps.
@@ -211,6 +212,27 @@ function createInitialState(messages: Message[]): LoopState {
         messages,
         turnCount: 1,
     };
+}
+
+function formatLocalTimestamp(date = new Date()): string {
+    const pad = (value: number, length = 2): string =>
+        String(value).padStart(length, "0");
+
+    return [
+        date.getFullYear(),
+        "-",
+        pad(date.getMonth() + 1),
+        "-",
+        pad(date.getDate()),
+        "T",
+        pad(date.getHours()),
+        "-",
+        pad(date.getMinutes()),
+        "-",
+        pad(date.getSeconds()),
+        ".",
+        pad(date.getMilliseconds(), 3),
+    ].join("");
 }
 
 class TodoManager {
@@ -404,6 +426,15 @@ function extractText(message: Message): string {
         .map((block) => block.text)
         .filter(Boolean)
         .join("\n")
+        .trim();
+}
+
+function extractAssistantTexts(messages: Message[]): string {
+    return messages
+        .filter((message) => message.role === "assistant")
+        .map(extractText)
+        .filter(Boolean)
+        .join("\n\n")
         .trim();
 }
 
@@ -790,6 +821,35 @@ async function agentLoop(state: LoopState): Promise<void> {
     }
 }
 
+function writeMessageTrace(messages: Message[]): void {
+    const payload = {
+        updatedAt: new Date().toISOString(),
+        messages,
+    };
+    runWrite(MESSAGE_TRACE_PATH, `${JSON.stringify(payload, null, 2)}\n`);
+}
+
+async function readQuery(
+    rl: ReturnType<typeof createInterface>,
+): Promise<string> {
+    const firstLine = await rl.question("\x1b[36ms03 >> \x1b[0m");
+    if (firstLine.trim() !== '"""') {
+        return firstLine;
+    }
+
+    output.write('\x1b[36m... paste text, end with """\x1b[0m\n');
+    const lines: string[] = [];
+    while (true) {
+        const line = await new Promise<string>((resolve) => {
+            rl.once("line", resolve);
+        });
+        if (line.trim() === '"""') {
+            return lines.join("\n");
+        }
+        lines.push(line);
+    }
+}
+
 async function main(): Promise<void> {
     loadDotEnv();
 
@@ -798,21 +858,23 @@ async function main(): Promise<void> {
 
     try {
         while (true) {
-            const query = await rl.question("\x1b[36ms03 >> \x1b[0m");
+            const query = await readQuery(rl);
             if (["q", "exit", ""].includes(query.trim().toLowerCase())) {
                 break;
             }
 
+            const turnStartIndex = history.length;
             history.push({ role: "user", content: query });
             const state = createInitialState(history);
             await agentLoop(state);
-
-            const finalMessage = history.at(-1);
-            const finalText = finalMessage ? extractText(finalMessage) : "";
+            writeMessageTrace(history);
+            console.log("\n----以下是模型的回应----\n");
+            const finalText = extractAssistantTexts(
+                history.slice(turnStartIndex),
+            );
             if (finalText) {
                 console.log(finalText);
             }
-            console.log();
         }
     } finally {
         rl.close();
