@@ -92,14 +92,18 @@ const PLAN_REMINDER_INTERVAL = 3;
 const MESSAGE_TRACE_PATH = `debug/messages-${formatLocalTimestamp()}.json`;
 const SYSTEM = `You are a coding agent at ${WORKDIR}.
 Use the todo tool for multi-step work.
+Use the task tool to delegate focused exploration or subtasks when it keeps the parent context cleaner.
 Keep exactly one step in_progress when a task has multiple steps.
 Refresh the plan as work advances. Prefer tools over prose.`;
+const SUBAGENT_SYSTEM = `You are a coding subagent at ${WORKDIR}.
+Complete the given task with the available filesystem tools, then summarize your findings.
+Return only the useful final summary.`;
 
 // 界定哪些操作是安全的
 const CONCURRENCY_SAFE = new Set(["read_file"]); // eslint-disable-line
 const CONCURRENCY_UNSAFE = new Set(["write_file", "edit_file", "todo"]); // eslint-disable-line
 
-const TOOLS: ChatCompletionTool[] = [
+const FILE_TOOLS: ChatCompletionTool[] = [
     {
         type: "function",
         function: {
@@ -162,46 +166,75 @@ const TOOLS: ChatCompletionTool[] = [
             },
         },
     },
-    {
-        type: "function",
-        function: {
-            name: "todo",
-            description:
-                "Rewrite the current session plan for multi-step work.",
-            parameters: {
-                type: "object",
-                properties: {
+];
+
+const TODO_TOOL: ChatCompletionTool = {
+    type: "function",
+    function: {
+        name: "todo",
+        description: "Rewrite the current session plan for multi-step work.",
+        parameters: {
+            type: "object",
+            properties: {
+                items: {
+                    type: "array",
                     items: {
-                        type: "array",
-                        items: {
-                            type: "object",
-                            properties: {
-                                content: { type: "string" },
-                                status: {
-                                    type: "string",
-                                    enum: [
-                                        "pending",
-                                        "in_progress",
-                                        "completed",
-                                    ],
-                                },
-                                activeForm: {
-                                    type: "string",
-                                    description:
-                                        "Optional present-continuous label.",
-                                },
+                        type: "object",
+                        properties: {
+                            content: { type: "string" },
+                            status: {
+                                type: "string",
+                                enum: ["pending", "in_progress", "completed"],
                             },
-                            required: ["content", "status"],
-                            additionalProperties: false,
+                            activeForm: {
+                                type: "string",
+                                description:
+                                    "Optional present-continuous label.",
+                            },
                         },
+                        required: ["content", "status"],
+                        additionalProperties: false,
                     },
                 },
-                required: ["items"],
-                additionalProperties: false,
             },
+            required: ["items"],
+            additionalProperties: false,
         },
     },
+};
+
+const TASK_TOOL: ChatCompletionTool = {
+    type: "function",
+    function: {
+        name: "task",
+        description:
+            "Spawn a subagent with fresh context. It shares the filesystem but not conversation history.",
+        parameters: {
+            type: "object",
+            properties: {
+                prompt: { type: "string" },
+                description: {
+                    type: "string",
+                    description: "Short description of the delegated task.",
+                },
+            },
+            required: ["prompt"],
+            additionalProperties: false,
+        },
+    },
+};
+
+const CHILD_TOOLS: ChatCompletionTool[] = FILE_TOOLS;
+const PARENT_TOOLS: ChatCompletionTool[] = [
+    ...FILE_TOOLS,
+    TODO_TOOL,
+    TASK_TOOL,
 ];
+
+type MessageCreateOptions = {
+    system: string;
+    tools: ChatCompletionTool[];
+};
 
 function loadDotEnv(path = ".env"): void {
     loadEnvFile({ path, override: true, quiet: true });
@@ -479,9 +512,9 @@ function requireArray(input: Record<string, unknown>, key: string): unknown[] {
     return value;
 }
 
-type ToolHandler = (input: Record<string, unknown>) => string;
+type ToolHandler = (input: Record<string, unknown>) => string | Promise<string>;
 
-const TOOL_HANDLERS: Record<string, ToolHandler> = {
+const BASE_TOOL_HANDLERS: Record<string, ToolHandler> = {
     bash: (input) => runBash(requireString(input, "command")),
     read_file: (input) =>
         runRead(requireString(input, "path"), optionalNumber(input, "limit")),
@@ -493,10 +526,28 @@ const TOOL_HANDLERS: Record<string, ToolHandler> = {
             requireString(input, "old_text"),
             requireString(input, "new_text"),
         ),
-    todo: (input) => TODO.update(requireArray(input, "items")),
 };
 
-function executeToolCalls(responseContent: ContentBlock[]): ContentBlock[] {
+const CHILD_TOOL_HANDLERS: Record<string, ToolHandler> = BASE_TOOL_HANDLERS;
+
+const PARENT_TOOL_HANDLERS: Record<string, ToolHandler> = {
+    ...BASE_TOOL_HANDLERS,
+    todo: (input) => TODO.update(requireArray(input, "items")),
+    task: async (input) => {
+        const description =
+            typeof input.description === "string"
+                ? input.description
+                : "subtask";
+        const prompt = requireString(input, "prompt");
+        console.log(`> task (${description}): ${prompt.slice(0, 80)}`);
+        return runSubagent(prompt);
+    },
+};
+
+async function executeToolCalls(
+    responseContent: ContentBlock[],
+    handlers: Record<string, ToolHandler>,
+): Promise<ContentBlock[]> {
     const results: ContentBlock[] = [];
 
     for (const block of responseContent) {
@@ -504,18 +555,20 @@ function executeToolCalls(responseContent: ContentBlock[]): ContentBlock[] {
             continue;
         }
 
-        const handler = TOOL_HANDLERS[block.name];
+        const handler = handlers[block.name];
         const toolOutput = handler
-            ? (() => {
+            ? await (async () => {
                   try {
-                      return handler(block.input);
+                      return await handler(block.input);
                   } catch (error: unknown) {
                       return `Error: ${error instanceof Error ? error.message : String(error)}`;
                   }
               })()
             : `Unknown tool: ${block.name}`;
 
-        console.log(`> ${block.name}:`);
+        if (block.name !== "task") {
+            console.log(`> ${block.name}:`);
+        }
         console.log(toolOutput.slice(0, 200));
 
         results.push({
@@ -689,11 +742,14 @@ function contentBlocksToOpenAIMessage(
     return text ? [{ role: "user", content: text }] : [];
 }
 
-function toOpenAIMessages(messages: Message[]): ChatCompletionMessageParam[] {
+function toOpenAIMessages(
+    messages: Message[],
+    system: string,
+): ChatCompletionMessageParam[] {
     return [
         {
             role: "system",
-            content: SYSTEM,
+            content: system,
         },
         ...normalizeMessages(messages).flatMap(contentBlocksToOpenAIMessage),
     ];
@@ -727,7 +783,10 @@ function fromOpenAIMessage(message: AssistantMessageWithReasoning): {
         : { content };
 }
 
-async function createMessage(messages: Message[]): Promise<ModelResponse> {
+async function createMessage(
+    messages: Message[],
+    options: MessageCreateOptions,
+): Promise<ModelResponse> {
     const model = process.env.DEEPSEEK_MODEL_ID || "deepseek-v4-flash";
     const baseURL = process.env.DEEPSEEK_BASE_URL || "https://api.deepseek.com";
     const apiKey = process.env.DEEPSEEK_API_KEY;
@@ -743,8 +802,8 @@ async function createMessage(messages: Message[]): Promise<ModelResponse> {
 
     const response = await client.chat.completions.create({
         model,
-        messages: toOpenAIMessages(messages),
-        tools: TOOLS,
+        messages: toOpenAIMessages(messages, options.system),
+        tools: options.tools,
         tool_choice: "auto",
         max_tokens: DEFAULT_MAX_TOKENS,
     });
@@ -768,9 +827,59 @@ async function createMessage(messages: Message[]): Promise<ModelResponse> {
     return modelResponse;
 }
 
+async function runSubagent(prompt: string): Promise<string> {
+    const subMessages: Message[] = [{ role: "user", content: prompt }];
+    let response: ModelResponse | undefined;
+
+    for (let turn = 0; turn < 30; turn += 1) {
+        response = await createMessage(subMessages, {
+            system: SUBAGENT_SYSTEM,
+            tools: CHILD_TOOLS,
+        });
+
+        const assistantMessage: Message = {
+            role: "assistant",
+            content: response.content,
+        };
+        if (response.reasoningContent) {
+            assistantMessage.reasoningContent = response.reasoningContent;
+        }
+        subMessages.push(assistantMessage);
+
+        if (response.stopReason !== "tool_calls") {
+            break;
+        }
+
+        const results = await executeToolCalls(
+            response.content,
+            CHILD_TOOL_HANDLERS,
+        );
+        if (results.length === 0) {
+            break;
+        }
+        subMessages.push({ role: "user", content: results });
+    }
+
+    if (!response) {
+        return "(no summary)";
+    }
+
+    const summary = response.content
+        .filter((block): block is TextBlock => block.type === "text")
+        .map((block) => block.text)
+        .filter(Boolean)
+        .join("\n")
+        .trim();
+
+    return summary || "(no summary)";
+}
+
 async function runOneTurn(state: LoopState): Promise<boolean> {
     // 走 LLM 调用
-    const response = await createMessage(state.messages);
+    const response = await createMessage(state.messages, {
+        system: SYSTEM,
+        tools: PARENT_TOOLS,
+    });
     // DeepSeek 会回传一个 reasoningContent 字段，要带上
     const assistantMessage: Message = {
         role: "assistant",
@@ -787,7 +896,10 @@ async function runOneTurn(state: LoopState): Promise<boolean> {
     }
 
     // 有工具调用且正常返回，需要把工具的结果塞回去
-    const results = executeToolCalls(response.content);
+    const results = await executeToolCalls(
+        response.content,
+        PARENT_TOOL_HANDLERS,
+    );
     if (results.length === 0) {
         delete state.transitionReason;
         return false;
@@ -832,7 +944,7 @@ function writeMessageTrace(messages: Message[]): void {
 async function readQuery(
     rl: ReturnType<typeof createInterface>,
 ): Promise<string> {
-    const firstLine = await rl.question("\x1b[36ms03 >> \x1b[0m");
+    const firstLine = await rl.question("\x1b[36ms04 >> \x1b[0m");
     if (firstLine.trim() !== '"""') {
         return firstLine;
     }
