@@ -6,3 +6,6 @@ coverage/
 .env
 .env.*
 !.env.example
+.debug
+.task_outputs
+.transcripts
