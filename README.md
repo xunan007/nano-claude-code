@@ -12,6 +12,7 @@
 - [message 格式转换｜s02](./doc/wiki/message%20格式转换.md)
 - [待办写入工具｜s03](./doc/wiki/待办写入工具.md)
 - [子代理｜s04](./doc/wiki/子代理.md)
+- [技能系统｜s05](./doc/wiki/技能系统.md)
 
 ## 不同分支对应的阶段代码
 
@@ -104,7 +105,55 @@
 **测试指令：**
 
 ```
-请使用 task 工具派一个子代理阅读 package.json 和 tsconfig.json，然后根据它的摘要告诉我这个项目的运行方式。
+请使用 task 工具派一个子代理阅读 package.json 和 tsconfig.json。然后根据它的摘要告诉我这个项目的运行方式。
 ```
 
 输出示例：[s04-1.md](./doc/output/s04/1.md)
+
+### s05 技能系统
+
+**分支：**
+
+- feat/s05
+
+**为什么需要这个功能：**
+
+- 避免 system prompt 变得越来越臃肿
+
+**概念说明：**
+
+- skill: 可选知识包，只有在某类任务需要时才能加载
+- memory: 跨会话忍让有价值的信息，它是系统记住的东西，不是任务手册
+- CLAUDE.md: 更稳定、更长期的规则说明，通常比单个 skill 更“全局”
+
+**核心功能说明：**
+
+- skill 轻量发现
+- 按需深加载
+
+**其他功能说明：**
+
+- 父代理和子代理都可以调用 `load_skill`
+- 技能目录约定为 `skills/**/SKILL.md`
+
+**测试指令：**
+
+先创建 `skills/project-summary/SKILL.md`：
+
+```md
+---
+name: project-summary
+description: Summarize a TypeScript project by reading package and config files.
+---
+
+Read package.json first, then inspect TypeScript and lint config.
+Summarize scripts, runtime entry points, and likely development workflow.
+```
+
+再运行：
+
+```
+请先加载 project-summary 技能，再阅读 package.json、tsconfig.json 和 eslint.config.js，总结这个项目如何运行。
+```
+
+输出示例：[s05-1.md](./doc/output/s05/1.md)

@@ -1,8 +1,15 @@
 #!/usr/bin/env node
 
 import { spawnSync } from "node:child_process";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, isAbsolute, relative, resolve } from "node:path";
+import {
+    existsSync,
+    mkdirSync,
+    readdirSync,
+    readFileSync,
+    statSync,
+    writeFileSync,
+} from "node:fs";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import { fileURLToPath } from "node:url";
@@ -66,6 +73,17 @@ type PlanningState = {
     roundsSinceUpdate: number; // 连续过去多少轮还没有更新计划
 };
 
+type SkillManifest = {
+    name: string;
+    description: string;
+    path: string;
+};
+
+type SkillDocument = {
+    manifest: SkillManifest;
+    body: string;
+};
+
 type AssistantMessageWithReasoning = {
     content: string | null;
     reasoning_content?: string;
@@ -88,16 +106,9 @@ const DEFAULT_MAX_TOKENS = 8000;
 const BASH_TIMEOUT_MS = 120_000;
 const MAX_TOOL_OUTPUT_CHARS = 50_000;
 const WORKDIR = process.cwd();
+const SKILLS_DIR = resolve(WORKDIR, "skills");
 const PLAN_REMINDER_INTERVAL = 3;
 const MESSAGE_TRACE_PATH = `debug/messages-${formatLocalTimestamp()}.json`;
-const SYSTEM = `You are a coding agent at ${WORKDIR}.
-Use the todo tool for multi-step work.
-Use the task tool to delegate focused exploration or subtasks when it keeps the parent context cleaner.
-Keep exactly one step in_progress when a task has multiple steps.
-Refresh the plan as work advances. Prefer tools over prose.`;
-const SUBAGENT_SYSTEM = `You are a coding subagent at ${WORKDIR}.
-Complete the given task with the available filesystem tools, then summarize your findings.
-Return only the useful final summary.`;
 
 // 界定哪些操作是安全的
 const CONCURRENCY_SAFE = new Set(["read_file"]); // eslint-disable-line
@@ -224,9 +235,26 @@ const TASK_TOOL: ChatCompletionTool = {
     },
 };
 
-const CHILD_TOOLS: ChatCompletionTool[] = FILE_TOOLS;
+const LOAD_SKILL_TOOL: ChatCompletionTool = {
+    type: "function",
+    function: {
+        name: "load_skill",
+        description: "Load the full body of a named skill into context.",
+        parameters: {
+            type: "object",
+            properties: {
+                name: { type: "string" },
+            },
+            required: ["name"],
+            additionalProperties: false,
+        },
+    },
+};
+
+const BASIC_TOOLS: ChatCompletionTool[] = [...FILE_TOOLS, LOAD_SKILL_TOOL];
+const CHILD_TOOLS: ChatCompletionTool[] = BASIC_TOOLS;
 const PARENT_TOOLS: ChatCompletionTool[] = [
-    ...FILE_TOOLS,
+    ...BASIC_TOOLS,
     TODO_TOOL,
     TASK_TOOL,
 ];
@@ -266,6 +294,137 @@ function formatLocalTimestamp(date = new Date()): string {
         ".",
         pad(date.getMilliseconds(), 3),
     ].join("");
+}
+
+class SkillRegistry {
+    documents: Map<string, SkillDocument> = new Map();
+
+    constructor(private readonly skillsDir: string) {
+        this.loadAll();
+    }
+
+    describeAvailable(): string {
+        if (this.documents.size === 0) {
+            return "(no skills available)";
+        }
+
+        return [...this.documents.keys()]
+            .sort()
+            .map((name) => {
+                const document = this.documents.get(name);
+                if (!document) {
+                    return "";
+                }
+                return `- ${document.manifest.name}: ${document.manifest.description}`;
+            })
+            .filter(Boolean)
+            .join("\n");
+    }
+
+    loadFullText(name: string): string {
+        const document = this.documents.get(name);
+        if (!document) {
+            const known = [...this.documents.keys()].sort().join(", ");
+            return `Error: Unknown skill '${name}'. Available skills: ${
+                known || "(none)"
+            }`;
+        }
+
+        return `<skill name="${document.manifest.name}">\n${document.body}\n</skill>`;
+    }
+
+    private loadAll(): void {
+        if (!existsSync(this.skillsDir)) {
+            return;
+        }
+
+        for (const path of this.findSkillFiles(this.skillsDir)) {
+            const { metadata, body } = this.parseFrontmatter(
+                readFileSync(path, "utf8"),
+            );
+            const fallbackName = dirname(path).split(/[\\/]/).at(-1);
+            const name = metadata.name || fallbackName || "skill";
+            const description = metadata.description || "No description";
+            const manifest: SkillManifest = {
+                name,
+                description,
+                path,
+            };
+            this.documents.set(name, {
+                manifest,
+                body: body.trim(),
+            });
+        }
+    }
+
+    private findSkillFiles(dir: string): string[] {
+        const entries = readdirSync(dir)
+            .map((entry) => join(dir, entry))
+            .sort();
+        const paths: string[] = [];
+
+        for (const entry of entries) {
+            const stat = statSync(entry);
+            if (stat.isDirectory()) {
+                paths.push(...this.findSkillFiles(entry));
+            } else if (stat.isFile() && entry.endsWith("SKILL.md")) {
+                paths.push(entry);
+            }
+        }
+
+        return paths;
+    }
+
+    private parseFrontmatter(text: string): {
+        metadata: Record<string, string>;
+        body: string;
+    } {
+        const match = /^---\n([\s\S]*?)\n---\n([\s\S]*)/.exec(text);
+        if (!match) {
+            return { metadata: {}, body: text };
+        }
+
+        const metadata: Record<string, string> = {};
+        const frontmatter = match[1] ?? "";
+        const body = match[2] ?? "";
+        for (const line of frontmatter.trim().split(/\r?\n/)) {
+            const separatorIndex = line.indexOf(":");
+            if (separatorIndex === -1) {
+                continue;
+            }
+            const key = line.slice(0, separatorIndex).trim();
+            const value = line.slice(separatorIndex + 1).trim();
+            if (key) {
+                metadata[key] = value;
+            }
+        }
+
+        return { metadata, body };
+    }
+}
+
+class PromptBuilder {
+    static parent(workdir: string, skillRegistry: SkillRegistry): string {
+        return `You are a coding agent at ${workdir}.
+Use load_skill when a task needs specialized instructions before you act.
+${this.skillsCatalog(skillRegistry)}
+Use the todo tool for multi-step work.
+Use the task tool to delegate focused exploration or subtasks when it keeps the parent context cleaner.
+Keep exactly one step in_progress when a task has multiple steps.
+Refresh the plan as work advances. Prefer tools over prose.`;
+    }
+
+    static subagent(workdir: string, skillRegistry: SkillRegistry): string {
+        return `You are a coding subagent at ${workdir}.
+Use load_skill when a task needs specialized instructions before you act.
+${this.skillsCatalog(skillRegistry)}
+Complete the given task with the available filesystem tools, then summarize your findings.
+Return only the useful final summary.`;
+    }
+
+    private static skillsCatalog(skillRegistry: SkillRegistry): string {
+        return `Skills available:\n${skillRegistry.describeAvailable()}`;
+    }
 }
 
 class TodoManager {
@@ -369,6 +528,7 @@ class TodoManager {
 }
 
 const TODO = new TodoManager();
+const SKILL_REGISTRY = new SkillRegistry(SKILLS_DIR);
 
 // 防止路径逃逸
 function safePath(path: string): string {
@@ -526,6 +686,8 @@ const BASE_TOOL_HANDLERS: Record<string, ToolHandler> = {
             requireString(input, "old_text"),
             requireString(input, "new_text"),
         ),
+    load_skill: (input) =>
+        SKILL_REGISTRY.loadFullText(requireString(input, "name")),
 };
 
 const CHILD_TOOL_HANDLERS: Record<string, ToolHandler> = BASE_TOOL_HANDLERS;
@@ -833,7 +995,7 @@ async function runSubagent(prompt: string): Promise<string> {
 
     for (let turn = 0; turn < 30; turn += 1) {
         response = await createMessage(subMessages, {
-            system: SUBAGENT_SYSTEM,
+            system: PromptBuilder.subagent(WORKDIR, SKILL_REGISTRY),
             tools: CHILD_TOOLS,
         });
 
@@ -877,7 +1039,7 @@ async function runSubagent(prompt: string): Promise<string> {
 async function runOneTurn(state: LoopState): Promise<boolean> {
     // 走 LLM 调用
     const response = await createMessage(state.messages, {
-        system: SYSTEM,
+        system: PromptBuilder.parent(WORKDIR, SKILL_REGISTRY),
         tools: PARENT_TOOLS,
     });
     // DeepSeek 会回传一个 reasoningContent 字段，要带上
@@ -944,7 +1106,7 @@ function writeMessageTrace(messages: Message[]): void {
 async function readQuery(
     rl: ReturnType<typeof createInterface>,
 ): Promise<string> {
-    const firstLine = await rl.question("\x1b[36ms04 >> \x1b[0m");
+    const firstLine = await rl.question("\x1b[36ms05 >> \x1b[0m");
     if (firstLine.trim() !== '"""') {
         return firstLine;
     }
