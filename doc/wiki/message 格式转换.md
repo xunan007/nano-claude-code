@@ -20,7 +20,7 @@ type Message = {
 };
 ```
 
-`content` 可以是普通字符串，也可以是 block 数组：
+content 可以是普通字符串，也可以是 block 数组：
 
 ```ts
 type ContentBlock =
@@ -68,7 +68,7 @@ type ContentBlock =
 ];
 ```
 
-这里的 `tool_use` / `tool_result` 是为了延续原 Python 教程的概念。DeepSeek/OpenAI API 并不直接认识这两个 block。
+这里的 tool_use / tool_result 是为了延续原 Python 教程的概念。DeepSeek/OpenAI API 并不直接认识这两个 block。
 
 最终上下文对话的历史存在 state.messages 当中。
 
@@ -77,7 +77,7 @@ type ContentBlock =
 - toOpenAIMessages
     - 把 role=system 的 prompt 添加进去
     - normalizeMessages 处理清理和调整内部消息
-        - 清理 block 里的元数据，`_`开头的字段全去掉
+        - 清理 block 里的元数据，_开头的字段全去掉
         - tool_use 缺失对应 tool_result，补一条
         - 合并相邻同 role 的消息
     - .flatMap(contentBlocksToOpenAIMessage) 转换成 OpenAI message
@@ -110,9 +110,9 @@ state.messages
     -> tool_result 写回 state.messages
 ```
 
-如果模型没有继续请求工具，`runOneTurn()` 返回 `false`，`agentLoop()` 结束。
+如果模型没有继续请求工具，runOneTurn() 返回 false，agentLoop() 结束。
 
-如果模型返回工具调用，`executeToolCalls()` 会根据 `tool_use.name` 查找 `TOOL_HANDLERS`：
+如果模型返回工具调用，executeToolCalls() 会根据 tool_use.name 查找 TOOL_HANDLERS：
 
 ```ts
 const TOOL_HANDLERS = {
@@ -123,7 +123,7 @@ const TOOL_HANDLERS = {
 };
 ```
 
-工具输出会包装成内部 `tool_result`：
+工具输出会包装成内部 tool_result：
 
 ```ts
 {
