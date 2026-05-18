@@ -240,3 +240,8 @@ ModelClient        封装模型调用和响应解析
 ```
 
 重构时保持 LoopState 只表达 agent loop 自身状态，不把 TodoManager、SkillRegistry 等服务依赖塞进 state。
+
+**存在问题：**
+
+- agent loop 需要 hook，否则逻辑前处理和后处理会非常麻烦
+- skills/todo 这些 domain service 混杂在 tool adapter，后续要拆除出去
