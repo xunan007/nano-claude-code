@@ -209,3 +209,34 @@ const KEEP_RECENT_TOOL_RESULTS = 2;
 ```
 
 **‼️：跑该指令会消耗比较多的 token，请慎重运行**
+
+### s01-s06 代码重构
+
+**分支：**
+
+- refactor/s01-s06
+
+**当前代码存在问题：**
+
+- 工具定义和工具执行分散维护，新增工具时容易漏同步
+- compact 状态通过工具调用链路层层透传，边界不清晰
+- message 转换、上下文处理、压缩逻辑混在全局函数里
+- 上下文压缩没有形成独立模块，读写文件、落盘、压缩摘要职责交织
+- bash/read/write/edit 等工具实现分散，后续扩展权限、日志、统计会比较困难
+
+**重构方向：**
+
+目标是把 s01-s06 叠加出来的单文件逻辑重新拆成清晰模块：
+
+```txt
+PromptBuilder      构建父代理和子代理 system prompt
+SkillRegistry      发现 skill 目录并按需加载完整 skill
+TodoManager        管理当前会话 todo 状态和 reminder
+MessageCodec       负责内部消息格式和 OpenAI-compatible 消息格式互转
+CompactManager     管理 compact state、大输出落盘、微压缩和完整压缩
+ToolRuntime        统一管理工具定义、工具集合和工具执行
+AgentLoop          管理 runOneTurn、agentLoop、runSubagent 的流程编排
+ModelClient        封装模型调用和响应解析
+```
+
+重构时保持 LoopState 只表达 agent loop 自身状态，不把 TodoManager、SkillRegistry 等服务依赖塞进 state。
