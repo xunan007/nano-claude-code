@@ -89,7 +89,7 @@ const BASH_TIMEOUT_MS = 120_000;
 const MAX_TOOL_OUTPUT_CHARS = 50_000;
 const WORKDIR = process.cwd();
 const PLAN_REMINDER_INTERVAL = 3;
-const MESSAGE_TRACE_PATH = `debug/messages-${formatLocalTimestamp()}.json`;
+const MESSAGE_TRACE_PATH = `.debug/messages-${formatLocalTimestamp()}.json`;
 const SYSTEM = `You are a coding agent at ${WORKDIR}.
 Use the todo tool for multi-step work.
 Keep exactly one step in_progress when a task has multiple steps.
