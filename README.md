@@ -193,16 +193,19 @@ Summarize scripts, runtime entry points, and likely development workflow.
 
 **测试指令：**
 
-手动压缩：
+1. 先把参数改小
 
-```
-请先读取 README.md 和 src/index.ts，然后调用 compact，focus 写“保留 s06 的实现状态和剩余验证事项”。
-```
-
-大输出落盘：
-
-```
-请运行一个 bash 命令输出 40000 个字符，然后告诉我工具结果是否被保存到了文件。
+```ts
+const CONTEXT_LIMIT = 8_000;
+const PERSIST_THRESHOLD = 3_000;
+const PREVIEW_CHARS = 500;
+const KEEP_RECENT_TOOL_RESULTS = 2;
 ```
 
-自动压缩可以临时把 `CONTEXT_LIMIT` 调小，例如 `2000`，再连续读取几个较长文件观察 `[auto compact]`。
+2. 执行指令
+
+```md
+请连续读取 README.md、src/index.ts、package.json、tsconfig.json、tsconfig.build.json、eslint.config.js、doc/wiki/message 格式转换.md、doc/wiki/待办写入工具.md、doc/wiki/子代理.md、doc/wiki/技能系统.md、doc/wiki/上下文压缩.md。每读取一个文件后，用 150 字左右记录关键信息。全部读取完成后，总结这个项目从 s02 到 s06 的能力演进。
+```
+
+**‼️：跑该指令会消耗比较多的 token，请慎重运行**
