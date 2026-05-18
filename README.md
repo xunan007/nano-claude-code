@@ -106,3 +106,5 @@
 ```
 请使用 task 工具派一个子代理阅读 package.json 和 tsconfig.json，然后根据它的摘要告诉我这个项目的运行方式。
 ```
+
+输出示例：[s04-1.md](./doc/output/s04/1.md)
