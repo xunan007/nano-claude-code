@@ -84,6 +84,12 @@ type SkillDocument = {
     body: string;
 };
 
+type CompactState = {
+    hasCompacted: boolean;
+    lastSummary: string;
+    recentFiles: string[];
+};
+
 type AssistantMessageWithReasoning = {
     content: string | null;
     reasoning_content?: string;
@@ -99,16 +105,22 @@ type AssistantMessageParamWithReasoning =
 type LoopState = {
     messages: Message[]; // 所有历史都写入这里
     turnCount: number; // 当前在第几轮
+    compact: CompactState;
     transitionReason?: "tool_result"; // 下一轮执行的理由
 };
 
 const DEFAULT_MAX_TOKENS = 8000;
 const BASH_TIMEOUT_MS = 120_000;
-const MAX_TOOL_OUTPUT_CHARS = 50_000;
 const WORKDIR = process.cwd();
 const SKILLS_DIR = resolve(WORKDIR, ".skills");
 const PLAN_REMINDER_INTERVAL = 3;
 const MESSAGE_TRACE_PATH = `.debug/messages-${formatLocalTimestamp()}.json`;
+const CONTEXT_LIMIT = 50_000;
+const KEEP_RECENT_TOOL_RESULTS = 3;
+const PERSIST_THRESHOLD = 30_000;
+const PREVIEW_CHARS = 2_000;
+const TRANSCRIPT_DIR = resolve(WORKDIR, ".transcripts");
+const TOOL_RESULTS_DIR = resolve(WORKDIR, ".task_outputs", "tool-results");
 
 // 界定哪些操作是安全的
 const CONCURRENCY_SAFE = new Set(["read_file"]); // eslint-disable-line
@@ -251,27 +263,51 @@ const LOAD_SKILL_TOOL: ChatCompletionTool = {
     },
 };
 
+const COMPACT_TOOL: ChatCompletionTool = {
+    type: "function",
+    function: {
+        name: "compact",
+        description:
+            "Summarize earlier conversation so work can continue in a smaller context.",
+        parameters: {
+            type: "object",
+            properties: {
+                focus: {
+                    type: "string",
+                    description: "Optional detail to preserve in the summary.",
+                },
+            },
+            additionalProperties: false,
+        },
+    },
+};
+
 const BASIC_TOOLS: ChatCompletionTool[] = [...FILE_TOOLS, LOAD_SKILL_TOOL];
 const CHILD_TOOLS: ChatCompletionTool[] = BASIC_TOOLS;
 const PARENT_TOOLS: ChatCompletionTool[] = [
     ...BASIC_TOOLS,
     TODO_TOOL,
     TASK_TOOL,
+    COMPACT_TOOL,
 ];
 
 type MessageCreateOptions = {
     system: string;
-    tools: ChatCompletionTool[];
+    tools?: ChatCompletionTool[];
 };
 
 function loadDotEnv(path = ".env"): void {
     loadEnvFile({ path, override: true, quiet: true });
 }
 
-function createInitialState(messages: Message[]): LoopState {
+function createInitialState(
+    messages: Message[],
+    compact: CompactState,
+): LoopState {
     return {
         messages,
         turnCount: 1,
+        compact,
     };
 }
 
@@ -410,6 +446,7 @@ Use load_skill when a task needs specialized instructions before you act.
 ${this.skillsCatalog(skillRegistry)}
 Use the todo tool for multi-step work.
 Use the task tool to delegate focused exploration or subtasks when it keeps the parent context cleaner.
+Use compact if the conversation gets too long.
 Keep exactly one step in_progress when a task has multiple steps.
 Refresh the plan as work advances. Prefer tools over prose.`;
     }
@@ -530,6 +567,14 @@ class TodoManager {
 const TODO = new TodoManager();
 const SKILL_REGISTRY = new SkillRegistry(SKILLS_DIR);
 
+function createCompactState(): CompactState {
+    return {
+        hasCompacted: false,
+        lastSummary: "",
+        recentFiles: [],
+    };
+}
+
 // 防止路径逃逸
 function safePath(path: string): string {
     const resolved = resolve(WORKDIR, path);
@@ -540,7 +585,89 @@ function safePath(path: string): string {
     return resolved;
 }
 
-function runBash(command: string): string {
+function estimateContextSize(messages: Message[]): number {
+    return JSON.stringify(messages).length;
+}
+
+function trackRecentFile(state: CompactState, path: string): void {
+    const existingIndex = state.recentFiles.indexOf(path);
+    if (existingIndex !== -1) {
+        state.recentFiles.splice(existingIndex, 1);
+    }
+
+    state.recentFiles.push(path);
+    if (state.recentFiles.length > 5) {
+        state.recentFiles.splice(0, state.recentFiles.length - 5);
+    }
+}
+
+function persistLargeOutput(toolUseId: string, output: string): string {
+    if (output.length <= PERSIST_THRESHOLD) {
+        return output;
+    }
+
+    mkdirSync(TOOL_RESULTS_DIR, { recursive: true });
+    const storedPath = resolve(TOOL_RESULTS_DIR, `${toolUseId}.txt`);
+    if (!existsSync(storedPath)) {
+        writeFileSync(storedPath, output);
+    }
+
+    const relativePath = relative(WORKDIR, storedPath);
+    return [
+        "<persisted-output>",
+        `Full output saved to: ${relativePath}`,
+        "Preview:",
+        output.slice(0, PREVIEW_CHARS),
+        "</persisted-output>",
+    ].join("\n");
+}
+
+function collectToolResultBlocks(messages: Message[]): ToolResultBlock[] {
+    const blocks: ToolResultBlock[] = [];
+
+    for (const message of messages) {
+        if (message.role !== "user" || !Array.isArray(message.content)) {
+            continue;
+        }
+
+        for (const block of message.content) {
+            if (block.type === "tool_result") {
+                blocks.push(block);
+            }
+        }
+    }
+
+    return blocks;
+}
+
+function microCompact(messages: Message[]): void {
+    const toolResults = collectToolResultBlocks(messages);
+    if (toolResults.length <= KEEP_RECENT_TOOL_RESULTS) {
+        return;
+    }
+
+    for (const block of toolResults.slice(0, -KEEP_RECENT_TOOL_RESULTS)) {
+        if (block.content.length <= 120) {
+            continue;
+        }
+        block.content =
+            "[Earlier tool result compacted. Re-run the tool if you need full detail.]";
+    }
+}
+
+function writeTranscript(messages: Message[]): string {
+    mkdirSync(TRANSCRIPT_DIR, { recursive: true });
+    const path = resolve(TRANSCRIPT_DIR, `transcript_${Date.now()}.jsonl`);
+    const lines = messages.map((message) => JSON.stringify(message)).join("\n");
+    writeFileSync(path, `${lines}\n`);
+    return path;
+}
+
+function replaceMessages(messages: Message[], replacement: Message[]): void {
+    messages.splice(0, messages.length, ...replacement);
+}
+
+function runBash(command: string, toolUseId: string): string {
     const dangerous = ["rm -rf /", "sudo", "shutdown", "reboot", "> /dev/"];
     if (dangerous.some((item) => command.includes(item))) {
         return "Error: Dangerous command blocked";
@@ -562,12 +689,18 @@ function runBash(command: string): string {
 
     const stdout = result.stdout ?? "";
     const stderr = result.stderr ?? "";
-    const combined = `${stdout}${stderr}`.trim();
-    return combined ? combined.slice(0, MAX_TOOL_OUTPUT_CHARS) : "(no output)";
+    const combined = `${stdout}${stderr}`.trim() || "(no output)";
+    return persistLargeOutput(toolUseId, combined);
 }
 
-function runRead(path: string, limit?: number): string {
+function runRead(
+    path: string,
+    toolUseId: string,
+    compactState: CompactState,
+    limit?: number,
+): string {
     try {
+        trackRecentFile(compactState, path);
         const text = readFileSync(safePath(path), "utf8");
         const lines = text.split(/\r?\n/);
         const limitedLines =
@@ -577,7 +710,7 @@ function runRead(path: string, limit?: number): string {
                       `... (${lines.length - limit} more lines)`,
                   ]
                 : lines;
-        return limitedLines.join("\n").slice(0, MAX_TOOL_OUTPUT_CHARS);
+        return persistLargeOutput(toolUseId, limitedLines.join("\n"));
     } catch (error: unknown) {
         return `Error: ${error instanceof Error ? error.message : String(error)}`;
     }
@@ -672,12 +805,26 @@ function requireArray(input: Record<string, unknown>, key: string): unknown[] {
     return value;
 }
 
-type ToolHandler = (input: Record<string, unknown>) => string | Promise<string>;
+type ToolContext = {
+    toolUseId: string;
+    compact: CompactState;
+};
+
+type ToolHandler = (
+    input: Record<string, unknown>,
+    context: ToolContext,
+) => string | Promise<string>;
 
 const BASE_TOOL_HANDLERS: Record<string, ToolHandler> = {
-    bash: (input) => runBash(requireString(input, "command")),
-    read_file: (input) =>
-        runRead(requireString(input, "path"), optionalNumber(input, "limit")),
+    bash: (input, context) =>
+        runBash(requireString(input, "command"), context.toolUseId),
+    read_file: (input, context) =>
+        runRead(
+            requireString(input, "path"),
+            context.toolUseId,
+            context.compact,
+            optionalNumber(input, "limit"),
+        ),
     write_file: (input) =>
         runWrite(requireString(input, "path"), requireString(input, "content")),
     edit_file: (input) =>
@@ -704,11 +851,13 @@ const PARENT_TOOL_HANDLERS: Record<string, ToolHandler> = {
         console.log(`> task (${description}): ${prompt.slice(0, 80)}`);
         return runSubagent(prompt);
     },
+    compact: () => "Compacting conversation...",
 };
 
 async function executeToolCalls(
     responseContent: ContentBlock[],
     handlers: Record<string, ToolHandler>,
+    compact: CompactState,
 ): Promise<ContentBlock[]> {
     const results: ContentBlock[] = [];
 
@@ -721,7 +870,10 @@ async function executeToolCalls(
         const toolOutput = handler
             ? await (async () => {
                   try {
-                      return await handler(block.input);
+                      return await handler(block.input, {
+                          toolUseId: block.id,
+                          compact,
+                      });
                   } catch (error: unknown) {
                       return `Error: ${error instanceof Error ? error.message : String(error)}`;
                   }
@@ -962,13 +1114,16 @@ async function createMessage(
         baseURL,
     });
 
-    const response = await client.chat.completions.create({
+    const request = {
         model,
         messages: toOpenAIMessages(messages, options.system),
-        tools: options.tools,
-        tool_choice: "auto",
         max_tokens: DEFAULT_MAX_TOKENS,
-    });
+        ...(options.tools && options.tools.length > 0
+            ? { tools: options.tools, tool_choice: "auto" as const }
+            : {}),
+    };
+
+    const response = await client.chat.completions.create(request);
 
     const choice = response.choices[0];
     const message = choice?.message;
@@ -989,8 +1144,69 @@ async function createMessage(
     return modelResponse;
 }
 
+async function summarizeHistory(messages: Message[]): Promise<string> {
+    const conversation = JSON.stringify(messages).slice(0, 80_000);
+    const prompt = [
+        "Summarize this coding-agent conversation so work can continue.",
+        "Preserve:",
+        "1. The current goal",
+        "2. Important findings and decisions",
+        "3. Files read or changed",
+        "4. Remaining work",
+        "5. User constraints and preferences",
+        "Be compact but concrete.",
+        "",
+        conversation,
+    ].join("\n");
+
+    const response = await createMessage([{ role: "user", content: prompt }], {
+        system: "You summarize coding-agent conversations for context compaction.",
+    });
+    const summary = response.content
+        .filter((block): block is TextBlock => block.type === "text")
+        .map((block) => block.text)
+        .filter(Boolean)
+        .join("\n")
+        .trim();
+
+    return summary || "(summary unavailable)";
+}
+
+async function compactHistory(
+    messages: Message[],
+    state: CompactState,
+    focus?: string,
+): Promise<void> {
+    const transcriptPath = writeTranscript(messages);
+    console.log(`[transcript saved: ${relative(WORKDIR, transcriptPath)}]`);
+
+    const summaryParts = [await summarizeHistory(messages)];
+    if (focus) {
+        summaryParts.push(`Focus to preserve next: ${focus}`);
+    }
+    if (state.recentFiles.length > 0) {
+        summaryParts.push(
+            [
+                "Recent files to reopen if needed:",
+                ...state.recentFiles.map((path) => `- ${path}`),
+            ].join("\n"),
+        );
+    }
+
+    const summary = summaryParts.join("\n\n");
+    state.hasCompacted = true;
+    state.lastSummary = summary;
+    replaceMessages(messages, [
+        {
+            role: "user",
+            content: `This conversation was compacted so the agent can continue working.\n\n${summary}`,
+        },
+    ]);
+}
+
 async function runSubagent(prompt: string): Promise<string> {
     const subMessages: Message[] = [{ role: "user", content: prompt }];
+    const compact = createCompactState();
     let response: ModelResponse | undefined;
 
     for (let turn = 0; turn < 30; turn += 1) {
@@ -1015,6 +1231,7 @@ async function runSubagent(prompt: string): Promise<string> {
         const results = await executeToolCalls(
             response.content,
             CHILD_TOOL_HANDLERS,
+            compact,
         );
         if (results.length === 0) {
             break;
@@ -1037,6 +1254,12 @@ async function runSubagent(prompt: string): Promise<string> {
 }
 
 async function runOneTurn(state: LoopState): Promise<boolean> {
+    microCompact(state.messages);
+    if (estimateContextSize(state.messages) > CONTEXT_LIMIT) {
+        console.log("[auto compact]");
+        await compactHistory(state.messages, state.compact);
+    }
+
     // 走 LLM 调用
     const response = await createMessage(state.messages, {
         system: PromptBuilder.parent(WORKDIR, SKILL_REGISTRY),
@@ -1061,6 +1284,7 @@ async function runOneTurn(state: LoopState): Promise<boolean> {
     const results = await executeToolCalls(
         response.content,
         PARENT_TOOL_HANDLERS,
+        state.compact,
     );
     if (results.length === 0) {
         delete state.transitionReason;
@@ -1084,6 +1308,19 @@ async function runOneTurn(state: LoopState): Promise<boolean> {
     }
 
     state.messages.push({ role: "user", content: results });
+    const compactBlock = response.content.find(
+        (block): block is ToolUseBlock =>
+            block.type === "tool_use" && block.name === "compact",
+    );
+    if (compactBlock) {
+        const focus =
+            typeof compactBlock.input.focus === "string"
+                ? compactBlock.input.focus
+                : undefined;
+        console.log("[manual compact]");
+        await compactHistory(state.messages, state.compact, focus);
+    }
+
     state.turnCount += 1;
     state.transitionReason = "tool_result";
     return true;
@@ -1106,7 +1343,7 @@ function writeMessageTrace(messages: Message[]): void {
 async function readQuery(
     rl: ReturnType<typeof createInterface>,
 ): Promise<string> {
-    const firstLine = await rl.question("\x1b[36ms05 >> \x1b[0m");
+    const firstLine = await rl.question("\x1b[36ms06 >> \x1b[0m");
     if (firstLine.trim() !== '"""') {
         return firstLine;
     }
@@ -1128,6 +1365,7 @@ async function main(): Promise<void> {
     loadDotEnv();
 
     const history: Message[] = [];
+    const compact = createCompactState();
     const rl = createInterface({ input, output });
 
     try {
@@ -1139,12 +1377,16 @@ async function main(): Promise<void> {
 
             const turnStartIndex = history.length;
             history.push({ role: "user", content: query });
-            const state = createInitialState(history);
+            const state = createInitialState(history, compact);
             await agentLoop(state);
             writeMessageTrace(history);
             console.log("\n----以下是模型的回应----\n");
+            const finalStartIndex = Math.min(
+                turnStartIndex,
+                Math.max(history.length - 1, 0),
+            );
             const finalText = extractAssistantTexts(
-                history.slice(turnStartIndex),
+                history.slice(finalStartIndex),
             );
             if (finalText) {
                 console.log(finalText);
