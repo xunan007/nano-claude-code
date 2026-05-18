@@ -106,9 +106,9 @@ const DEFAULT_MAX_TOKENS = 8000;
 const BASH_TIMEOUT_MS = 120_000;
 const MAX_TOOL_OUTPUT_CHARS = 50_000;
 const WORKDIR = process.cwd();
-const SKILLS_DIR = resolve(WORKDIR, "skills");
+const SKILLS_DIR = resolve(WORKDIR, ".skills");
 const PLAN_REMINDER_INTERVAL = 3;
-const MESSAGE_TRACE_PATH = `debug/messages-${formatLocalTimestamp()}.json`;
+const MESSAGE_TRACE_PATH = `.debug/messages-${formatLocalTimestamp()}.json`;
 
 // 界定哪些操作是安全的
 const CONCURRENCY_SAFE = new Set(["read_file"]); // eslint-disable-line

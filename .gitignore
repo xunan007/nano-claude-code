@@ -6,4 +6,4 @@ coverage/
 .env
 .env.*
 !.env.example
-debug
+.debug

@@ -134,11 +134,11 @@
 **其他功能说明：**
 
 - 父代理和子代理都可以调用 `load_skill`
-- 技能目录约定为 `skills/**/SKILL.md`
+- 技能目录约定为 `.skills/**/SKILL.md`
 
 **测试指令：**
 
-先创建 `skills/project-summary/SKILL.md`：
+先创建 `.skills/project-summary/SKILL.md`：
 
 ```md
 ---
