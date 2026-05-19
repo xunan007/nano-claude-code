@@ -6,6 +6,7 @@ import type { ChatCompletionTool } from "openai/resources/chat/completions";
 
 import { BASH_TIMEOUT_MS, WORKDIR } from "./config";
 import type { CompactManager } from "./compact-manager";
+import type { PermissionManager } from "./permission-manager";
 import type { SkillRegistry } from "./skill-registry";
 import type { TodoManager } from "./todo-manager";
 import type { ContentBlock } from "./types";
@@ -23,6 +24,7 @@ type ToolEntry = {
 type ToolRuntimeOptions = {
     compactManager: CompactManager;
     skillRegistry: SkillRegistry;
+    permissionManager?: PermissionManager | undefined;
     todoManager?: TodoManager;
     runSubagent?: (prompt: string) => Promise<string>;
     enableCompactTool?: boolean;
@@ -233,6 +235,45 @@ export class ToolRuntime {
                 continue;
             }
 
+            const permissionManager = this.options.permissionManager;
+            const decision = permissionManager?.check(block.name, block.input);
+            if (decision?.behavior === "deny") {
+                const output = `Permission denied: ${decision.reason}`;
+                console.log(`  [DENIED] ${block.name}: ${decision.reason}`);
+                results.push({
+                    type: "tool_result",
+                    tool_use_id: block.id,
+                    content: output,
+                });
+                continue;
+            }
+
+            if (decision?.behavior === "ask") {
+                const approved = await permissionManager?.askUser(
+                    block.name,
+                    block.input,
+                );
+                if (!approved) {
+                    const output = `Permission denied by user for ${block.name}`;
+                    console.log(`  [USER DENIED] ${block.name}`);
+                    if (
+                        permissionManager &&
+                        permissionManager.consecutiveDenials >=
+                            permissionManager.maxConsecutiveDenials
+                    ) {
+                        console.log(
+                            `  [${permissionManager.consecutiveDenials} consecutive denials -- consider switching to plan mode]`,
+                        );
+                    }
+                    results.push({
+                        type: "tool_result",
+                        tool_use_id: block.id,
+                        content: output,
+                    });
+                    continue;
+                }
+            }
+
             const entry = this.entries.get(block.name);
             const handlerResult = entry
                 ? await (async () => {
@@ -314,11 +355,6 @@ export class ToolRuntime {
     }
 
     private runBash(command: string, toolUseId: string): string {
-        const dangerous = ["rm -rf /", "sudo", "shutdown", "reboot", "> /dev/"];
-        if (dangerous.some((item) => command.includes(item))) {
-            return "Error: Dangerous command blocked";
-        }
-
         const result = spawnSync(command, {
             shell: true,
             cwd: WORKDIR,

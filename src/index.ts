@@ -13,6 +13,12 @@ import { MESSAGE_TRACE_PATH, SKILLS_DIR, WORKDIR } from "./config";
 import { CompactManager } from "./compact-manager";
 import { MessageCodec } from "./message-codec";
 import { ModelClient } from "./model-client";
+import {
+    isPermissionMode,
+    PermissionManager,
+    PERMISSION_MODES,
+    type PermissionMode,
+} from "./permission-manager";
 import { PromptBuilder } from "./prompt-builder";
 import { SkillRegistry } from "./skill-registry";
 import { TodoManager } from "./todo-manager";
@@ -35,7 +41,7 @@ function writeMessageTrace(messages: Message[]): void {
 async function readQuery(
     rl: ReturnType<typeof createInterface>,
 ): Promise<string> {
-    const firstLine = await rl.question("\x1b[36ms06 >> \x1b[0m");
+    const firstLine = await rl.question("\x1b[36ms07 >> \x1b[0m");
     if (firstLine.trim() !== '"""') {
         return firstLine;
     }
@@ -53,7 +59,7 @@ async function readQuery(
     }
 }
 
-function createAgentLoop(): {
+function createAgentLoop(permissionManager: PermissionManager): {
     agentLoop: AgentLoop;
     messageCodec: MessageCodec;
 } {
@@ -70,23 +76,93 @@ function createAgentLoop(): {
         messageCodec,
         modelClient,
         compactManager,
+        permissionManager,
     });
 
     return { agentLoop, messageCodec };
+}
+
+async function choosePermissionMode(
+    rl: ReturnType<typeof createInterface>,
+): Promise<PermissionMode> {
+    console.log(`Permission modes: ${PERMISSION_MODES.join(", ")}`);
+    const modeInput = (await rl.question("Mode (default): "))
+        .trim()
+        .toLowerCase();
+    if (!modeInput) {
+        return "default";
+    }
+    return isPermissionMode(modeInput) ? modeInput : "default";
+}
+
+function createPermissionManager(
+    mode: PermissionMode,
+    rl: ReturnType<typeof createInterface>,
+): PermissionManager {
+    return new PermissionManager({
+        mode,
+        askApproval: async (toolName, toolInput) => {
+            const preview = JSON.stringify(toolInput).slice(0, 200);
+            console.log(`\n  [Permission] ${toolName}: ${preview}`);
+            const answer = (await rl.question("  Allow? (y/n/always): "))
+                .trim()
+                .toLowerCase();
+            if (answer === "always") {
+                return "always";
+            }
+            if (answer === "y" || answer === "yes") {
+                return "yes";
+            }
+            return "no";
+        },
+    });
+}
+
+function handlePermissionCommand(
+    query: string,
+    permissionManager: PermissionManager,
+): boolean {
+    if (query.startsWith("/mode")) {
+        const [, mode] = query.split(/\s+/);
+        if (mode && isPermissionMode(mode)) {
+            permissionManager.mode = mode;
+            console.log(`[Switched to ${mode} mode]`);
+        } else {
+            console.log(`Usage: /mode <${PERMISSION_MODES.join("|")}>`);
+        }
+        return true;
+    }
+
+    if (query.trim() === "/rules") {
+        permissionManager.rules.forEach((rule, index) => {
+            console.log(`  ${index}: ${JSON.stringify(rule)}`);
+        });
+        return true;
+    }
+
+    return false;
 }
 
 async function main(): Promise<void> {
     loadDotEnv();
 
     const history: Message[] = [];
-    const { agentLoop, messageCodec } = createAgentLoop();
     const rl = createInterface({ input, output });
 
     try {
+        const mode = await choosePermissionMode(rl);
+        const permissionManager = createPermissionManager(mode, rl);
+        const { agentLoop, messageCodec } =
+            createAgentLoop(permissionManager);
+        console.log(`[Permission mode: ${mode}]`);
+
         while (true) {
             const query = await readQuery(rl);
             if (["q", "exit", ""].includes(query.trim().toLowerCase())) {
                 break;
+            }
+            if (handlePermissionCommand(query, permissionManager)) {
+                continue;
             }
 
             const turnStartIndex = history.length;

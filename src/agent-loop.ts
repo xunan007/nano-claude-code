@@ -2,6 +2,7 @@ import { WORKDIR } from "./config";
 import { CompactManager } from "./compact-manager";
 import type { MessageCodec } from "./message-codec";
 import type { ModelClient } from "./model-client";
+import type { PermissionManager } from "./permission-manager";
 import type { PromptBuilder } from "./prompt-builder";
 import type { SkillRegistry } from "./skill-registry";
 import type { TodoManager } from "./todo-manager";
@@ -21,6 +22,7 @@ type AgentLoopOptions = {
     messageCodec: MessageCodec;
     modelClient: ModelClient;
     compactManager: CompactManager;
+    permissionManager?: PermissionManager;
 };
 
 export class AgentLoop {
@@ -30,6 +32,7 @@ export class AgentLoop {
         this.parentRuntime = new ToolRuntime({
             compactManager: options.compactManager,
             skillRegistry: options.skillRegistry,
+            permissionManager: options.permissionManager,
             todoManager: options.todoManager,
             runSubagent: (prompt) => this.runSubagent(prompt),
             enableCompactTool: true,
@@ -58,6 +61,7 @@ export class AgentLoop {
         const childRuntime = new ToolRuntime({
             compactManager: childCompactManager,
             skillRegistry: this.options.skillRegistry,
+            permissionManager: this.options.permissionManager,
         });
         let response: ModelResponse | undefined;
 

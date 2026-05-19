@@ -15,6 +15,7 @@
 - [技能系统｜s05](./doc/wiki/技能系统.md)
 - [上下文压缩｜s06](./doc/wiki/上下文压缩.md)
 - [s01-s06 代码重构](./doc/wiki/s01-s06%20代码重构.md)
+- [权限系统｜s07](./doc/wiki/权限系统.md)
 
 ## 不同分支对应的阶段代码
 
@@ -246,3 +247,51 @@ ModelClient        封装模型调用和响应解析
 
 - agent loop 需要 hook，否则逻辑前处理和后处理会非常麻烦
 - skills/todo 这些 domain service 混杂在 tool adapter，后续要拆除出去
+
+### s07 权限系统
+
+**分支：**
+
+- feat/s07
+
+**为什么需要这个功能：**
+
+- 模型可能会写错文件、执行危险命令、在不该动手的时候动手
+- 所以模型执行的意图必须经过权限检查
+
+**核心功能说明：**
+
+- 新增 `PermissionManager`，所有工具调用执行前先经过权限管线
+- 权限管线顺序：bash 安全校验 -> deny rules -> mode check -> allow rules -> ask user
+- 支持三种模式：default、plan、auto
+- 支持 `/mode` 运行时切换模式，支持 `/rules` 查看当前规则
+
+**其他功能说明：**
+
+- 父代理和子代理共享同一个权限管理器
+- bash 命令会先检查 sudo、递归删除、命令替换、IFS 注入和 shell 元字符
+- 用户在询问中输入 `always` 后，会为当前工具追加临时 allow 规则
+
+**测试指令：**
+
+启动时选择 `plan`，再运行：
+
+```
+请创建 src/blocked.ts，内容随便写一句 hello。
+```
+
+预期：`write_file` 会被 plan mode 拒绝。
+
+切换回 default：
+
+```
+/mode default
+```
+
+再运行：
+
+```
+请读取 package.json，然后尝试执行 echo hello。
+```
+
+预期：读取会自动允许，bash 会询问用户是否批准。

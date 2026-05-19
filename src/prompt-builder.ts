@@ -3,6 +3,7 @@ import type { SkillRegistry } from "./skill-registry";
 export class PromptBuilder {
     parent(workdir: string, skillRegistry: SkillRegistry): string {
         return `You are a coding agent at ${workdir}.
+The user controls permissions. Some tool calls may be denied.
 Use load_skill when a task needs specialized instructions before you act.
 ${this.skillsCatalog(skillRegistry)}
 Use the todo tool for multi-step work.
@@ -14,6 +15,7 @@ Refresh the plan as work advances. Prefer tools over prose.`;
 
     subagent(workdir: string, skillRegistry: SkillRegistry): string {
         return `You are a coding subagent at ${workdir}.
+The user controls permissions. Some tool calls may be denied.
 Use load_skill when a task needs specialized instructions before you act.
 ${this.skillsCatalog(skillRegistry)}
 Complete the given task with the available filesystem tools, then summarize your findings.
