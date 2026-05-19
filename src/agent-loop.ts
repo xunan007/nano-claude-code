@@ -1,6 +1,7 @@
 import { WORKDIR } from "./config";
 import { CompactManager } from "./compact-manager";
 import type { HookManager } from "./hook-manager";
+import type { MemoryManager } from "./memory-manager";
 import type { MessageCodec } from "./message-codec";
 import type { ModelClient } from "./model-client";
 import type { PromptBuilder } from "./prompt-builder";
@@ -22,6 +23,7 @@ type AgentLoopOptions = {
     messageCodec: MessageCodec;
     modelClient: ModelClient;
     compactManager: CompactManager;
+    memoryManager?: MemoryManager;
     hookManager?: HookManager;
 };
 
@@ -36,6 +38,9 @@ export class AgentLoop {
             todoManager: options.todoManager,
             runSubagent: (prompt) => this.runSubagent(prompt),
             enableCompactTool: true,
+            ...(options.memoryManager
+                ? { memoryManager: options.memoryManager }
+                : {}),
         });
     }
 
@@ -62,6 +67,9 @@ export class AgentLoop {
             compactManager: childCompactManager,
             skillRegistry: this.options.skillRegistry,
             hookManager: this.options.hookManager,
+            ...(this.options.memoryManager
+                ? { memoryManager: this.options.memoryManager }
+                : {}),
         });
         let response: ModelResponse | undefined;
 
@@ -72,6 +80,7 @@ export class AgentLoop {
                     system: this.options.promptBuilder.subagent(
                         WORKDIR,
                         this.options.skillRegistry,
+                        this.options.memoryManager,
                     ),
                     tools: childRuntime.tools,
                 },
@@ -120,6 +129,7 @@ export class AgentLoop {
                 system: this.options.promptBuilder.parent(
                     WORKDIR,
                     this.options.skillRegistry,
+                    this.options.memoryManager,
                 ),
                 tools: this.parentRuntime.tools,
             },
@@ -139,9 +149,10 @@ export class AgentLoop {
             return false;
         }
 
-        const reminder = this.options.todoManager.noteToolRoundWithoutTodoUpdate(
-            this.hasToolUse(response.content, "todo"),
-        );
+        const reminder =
+            this.options.todoManager.noteToolRoundWithoutTodoUpdate(
+                this.hasToolUse(response.content, "todo"),
+            );
         if (reminder) {
             results.push({ type: "text", text: reminder });
         }

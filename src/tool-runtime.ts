@@ -7,6 +7,7 @@ import type { ChatCompletionTool } from "openai/resources/chat/completions";
 import { BASH_TIMEOUT_MS, WORKDIR } from "./config";
 import type { CompactManager } from "./compact-manager";
 import type { HookManager, PreToolUseContext } from "./hook-manager";
+import { MEMORY_TYPES, type MemoryManager } from "./memory-manager";
 import type { SkillRegistry } from "./skill-registry";
 import type { TodoManager } from "./todo-manager";
 import type { ContentBlock } from "./types";
@@ -24,6 +25,7 @@ type ToolEntry = {
 type ToolRuntimeOptions = {
     compactManager: CompactManager;
     skillRegistry: SkillRegistry;
+    memoryManager?: MemoryManager;
     hookManager?: HookManager | undefined;
     todoManager?: TodoManager;
     runSubagent?: (prompt: string) => Promise<string>;
@@ -110,6 +112,41 @@ const FILE_TOOL_DEFINITIONS: ChatCompletionTool[] = [
     },
 ];
 
+const SAVE_MEMORY_TOOL_DEFINITION: ChatCompletionTool = {
+    type: "function",
+    function: {
+        name: "save_memory",
+        description: "Save a persistent memory that survives across sessions.",
+        parameters: {
+            type: "object",
+            properties: {
+                name: {
+                    type: "string",
+                    description:
+                        "Short identifier (e.g. prefer_tabs, db_schema)",
+                },
+                description: {
+                    type: "string",
+                    description:
+                        "One-line summary of what this memory captures",
+                },
+                type: {
+                    type: "string",
+                    enum: [...MEMORY_TYPES],
+                    description:
+                        "user=preferences, feedback=corrections, project=non-obvious project conventions or decision reasons, reference=external resource pointers",
+                },
+                content: {
+                    type: "string",
+                    description: "Full memory content (multi-line OK)",
+                },
+            },
+            required: ["name", "description", "type", "content"],
+            additionalProperties: false,
+        },
+    },
+};
+
 const TODO_TOOL_DEFINITION: ChatCompletionTool = {
     type: "function",
     function: {
@@ -190,6 +227,18 @@ export class ToolRuntime {
 
     constructor(private readonly options: ToolRuntimeOptions) {
         this.registerBaseTools();
+        if (options.memoryManager) {
+            this.register(
+                SAVE_MEMORY_TOOL_DEFINITION,
+                (input) =>
+                    options.memoryManager?.saveMemory(
+                        requireString(input, "name"),
+                        requireString(input, "description"),
+                        requireString(input, "type"),
+                        requireString(input, "content"),
+                    ) ?? "No memory manager configured",
+            );
+        }
         if (options.todoManager) {
             this.register(
                 TODO_TOOL_DEFINITION,

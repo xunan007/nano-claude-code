@@ -12,6 +12,7 @@ import { AgentLoop } from "./agent-loop";
 import { MESSAGE_TRACE_PATH, SKILLS_DIR, WORKDIR } from "./config";
 import { CompactManager } from "./compact-manager";
 import { HookManager } from "./hook-manager";
+import { MemoryManager } from "./memory-manager";
 import { MessageCodec } from "./message-codec";
 import { ModelClient } from "./model-client";
 import {
@@ -40,7 +41,7 @@ function writeMessageTrace(messages: Message[]): void {
 async function readQuery(
     rl: ReturnType<typeof createInterface>,
 ): Promise<string> {
-    const firstLine = await rl.question("\x1b[36ms08 >> \x1b[0m");
+    const firstLine = await rl.question("\x1b[36ms09 >> \x1b[0m");
     if (firstLine.trim() !== '"""') {
         return firstLine;
     }
@@ -60,6 +61,7 @@ async function readQuery(
 
 function createAgentLoop(
     hookManager: HookManager,
+    memoryManager: MemoryManager,
 ): {
     agentLoop: AgentLoop;
     messageCodec: MessageCodec;
@@ -77,6 +79,7 @@ function createAgentLoop(
         messageCodec,
         modelClient,
         compactManager,
+        memoryManager,
         hookManager,
     });
 
@@ -85,6 +88,16 @@ function createAgentLoop(
 
 async function main(): Promise<void> {
     loadDotEnv();
+
+    const memoryManager = new MemoryManager();
+    memoryManager.loadAll();
+    if (memoryManager.count() > 0) {
+        console.log(`[${memoryManager.count()} memories loaded into context]`);
+    } else {
+        console.log(
+            "[No existing memories. The agent can create them with save_memory.]",
+        );
+    }
 
     const history: Message[] = [];
     const rl = createInterface({ input, output });
@@ -95,7 +108,10 @@ async function main(): Promise<void> {
             rl,
             hookManager,
         );
-        const { agentLoop, messageCodec } = createAgentLoop(hookManager);
+        const { agentLoop, messageCodec } = createAgentLoop(
+            hookManager,
+            memoryManager,
+        );
         const sessionStartResult = await hookManager.runHooks("SessionStart", {
             source: "startup",
         });
@@ -109,6 +125,17 @@ async function main(): Promise<void> {
             const query = await readQuery(rl);
             if (["q", "exit", ""].includes(query.trim().toLowerCase())) {
                 break;
+            }
+            if (query.trim() === "/memories") {
+                const memories = memoryManager.list();
+                if (memories.length > 0) {
+                    for (const memory of memories) {
+                        console.log(memory);
+                    }
+                } else {
+                    console.log("  (no memories)");
+                }
+                continue;
             }
             if (handlePermissionCommand(query, permissionManager)) {
                 continue;
