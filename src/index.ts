@@ -41,7 +41,7 @@ function writeMessageTrace(messages: Message[]): void {
 async function readQuery(
     rl: ReturnType<typeof createInterface>,
 ): Promise<string> {
-    const firstLine = await rl.question("\x1b[36ms09 >> \x1b[0m");
+    const firstLine = await rl.question("\x1b[36ms10 >> \x1b[0m");
     if (firstLine.trim() !== '"""') {
         return firstLine;
     }
@@ -112,6 +112,10 @@ async function main(): Promise<void> {
             hookManager,
             memoryManager,
         );
+        const fullPrompt = agentLoop.parentSystemPrompt();
+        console.log(
+            `[System prompt assembled: ${fullPrompt.length} chars, ~${agentLoop.systemPromptSections().length} sections]`,
+        );
         const sessionStartResult = await hookManager.runHooks("SessionStart", {
             source: "startup",
         });
@@ -134,6 +138,18 @@ async function main(): Promise<void> {
                     }
                 } else {
                     console.log("  (no memories)");
+                }
+                continue;
+            }
+            if (query.trim() === "/prompt") {
+                console.log("--- System Prompt ---");
+                console.log(agentLoop.parentSystemPrompt());
+                console.log("--- End ---");
+                continue;
+            }
+            if (query.trim() === "/sections") {
+                for (const section of agentLoop.systemPromptSections()) {
+                    console.log(`  ${section}`);
                 }
                 continue;
             }

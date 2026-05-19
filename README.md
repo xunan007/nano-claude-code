@@ -387,3 +387,41 @@ _注：真实设计可以通过 search_memory 动态加载记忆_
 ```
 
 预期：模型会参考刚写入的记忆回答。
+
+### s10 系统提示词
+
+**分支：**
+
+- feat/s10
+
+**为什么需要这个功能：**
+
+- system prompt 不应该是一整段难维护的大字符串
+- 随着 skill、memory、CLAUDE.md、动态上下文增加，需要有清晰的组装边界
+
+**核心功能说明：**
+
+- 新增 System Prompt Construction 思路，把提示词拆成独立 section
+- 当前包含 core instructions、skill metadata、memory section、CLAUDE.md chain、dynamic context
+- 使用 DYNAMIC_BOUNDARY 标记稳定内容和动态内容的分界
+- **每一轮的 system prompt 都是重新构建的**
+
+**其他功能说明：**
+
+- 新增 /prompt 命令，用来查看完整组装后的 system prompt
+- 新增 /sections 命令，用来查看当前 system prompt 的主要分段
+- per-turn reminder 使用 system-reminder 形式注入，不混进稳定 system prompt
+
+**测试指令：**
+
+```
+/sections
+```
+
+预期：能看到当前 system prompt 的分段标题和 DYNAMIC_BOUNDARY。
+
+```
+/prompt
+```
+
+预期：能看到完整组装后的 system prompt。

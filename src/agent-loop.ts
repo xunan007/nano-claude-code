@@ -4,7 +4,7 @@ import type { HookManager } from "./hook-manager";
 import type { MemoryManager } from "./memory-manager";
 import type { MessageCodec } from "./message-codec";
 import type { ModelClient } from "./model-client";
-import type { PromptBuilder } from "./prompt-builder";
+import { buildSystemReminder, type PromptBuilder } from "./prompt-builder";
 import type { SkillRegistry } from "./skill-registry";
 import type { TodoManager } from "./todo-manager";
 import { ToolRuntime } from "./tool-runtime";
@@ -55,6 +55,18 @@ export class AgentLoop {
         while (await this.runOneTurn(state)) {
             // runOneTurn owns each transition.
         }
+    }
+
+    parentSystemPrompt(): string {
+        return this.options.promptBuilder.parent(
+            WORKDIR,
+            this.options.skillRegistry,
+            this.options.memoryManager,
+        );
+    }
+
+    systemPromptSections(): string[] {
+        return this.options.promptBuilder.sections(this.parentSystemPrompt());
     }
 
     async runSubagent(prompt: string): Promise<string> {
@@ -153,8 +165,9 @@ export class AgentLoop {
             this.options.todoManager.noteToolRoundWithoutTodoUpdate(
                 this.hasToolUse(response.content, "todo"),
             );
-        if (reminder) {
-            results.push({ type: "text", text: reminder });
+        const systemReminder = buildSystemReminder(reminder);
+        if (systemReminder) {
+            results.push({ type: "text", text: systemReminder });
         }
 
         state.messages.push({ role: "user", content: results });
