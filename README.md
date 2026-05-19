@@ -4,7 +4,7 @@
 
 ## 如何运行
 
-- 在当前目录下创建 .env 文件：`touch .env`
+- 在当前目录下创建 .env 文件：touch .env
 - 填入 DEEPSEEK_API_KEY/DEEPSEEK_MODEL_ID/DEEPSEEK_BASE_URL
 
 ## 文档说明
@@ -17,6 +17,7 @@
 - [s01-s06 代码重构](./doc/wiki/s01-s06%20代码重构.md)
 - [权限系统｜s07](./doc/wiki/权限系统.md)
 - [Hook 系统｜s08](./doc/wiki/Hook%20系统.md)
+- [记忆系统｜s09](./doc/wiki/记忆系统.md)
 
 ## 不同分支对应的阶段代码
 
@@ -137,12 +138,12 @@
 
 **其他功能说明：**
 
-- 父代理和子代理都可以调用 `load_skill`
-- 技能目录约定为 `.skills/**/SKILL.md`
+- 父代理和子代理都可以调用 load_skill
+- 技能目录约定为 .skills/\*\*/SKILL.md
 
 **测试指令：**
 
-先创建 `.skills/project-summary/SKILL.md`：
+先创建 .skills/project-summary/SKILL.md：
 
 ```md
 ---
@@ -190,9 +191,9 @@ Summarize scripts, runtime entry points, and likely development workflow.
 
 **其他功能说明：**
 
-- 新增 `compact` 工具，允许模型主动压缩历史
-- 压缩前会把完整 transcript 保存到 `.transcripts`
-- 大工具输出会保存到 `.task_outputs/tool-results`
+- 新增 compact 工具，允许模型主动压缩历史
+- 压缩前会把完整 transcript 保存到 .transcripts
+- 大工具输出会保存到 .task_outputs/tool-results
 
 **测试指令：**
 
@@ -262,26 +263,26 @@ ModelClient        封装模型调用和响应解析
 
 **核心功能说明：**
 
-- 新增 `PermissionManager`，所有工具调用执行前先经过权限管线
+- 新增 PermissionManager，所有工具调用执行前先经过权限管线
 - 权限管线顺序：bash 安全校验 -> deny rules -> mode check -> allow rules -> ask user
 - 支持三种模式：default、plan、auto
-- 支持 `/mode` 运行时切换模式，支持 `/rules` 查看当前规则
+- 支持 /mode 运行时切换模式，支持 /rules 查看当前规则
 
 **其他功能说明：**
 
 - 父代理和子代理共享同一个权限管理器
 - bash 命令会先检查 sudo、递归删除、命令替换、IFS 注入和 shell 元字符
-- 用户在询问中输入 `always` 后，会为当前工具追加临时 allow 规则
+- 用户在询问中输入 always 后，会为当前工具追加临时 allow 规则
 
 **测试指令：**
 
-启动时选择 `plan`，再运行：
+启动时选择 plan，再运行：
 
 ```
 请创建 src/blocked.ts，内容随便写一句 hello。
 ```
 
-预期：`write_file` 会被 plan mode 拒绝。
+预期：write_file 会被 plan mode 拒绝。
 
 切换回 default：
 
@@ -310,7 +311,7 @@ ModelClient        封装模型调用和响应解析
 
 **核心功能说明：**
 
-- 新增进程内 `HookManager`，通过 `registerHook` 注册 TypeScript hook
+- 新增进程内 HookManager，通过 registerHook 注册 TypeScript hook
 - 支持三个事件：SessionStart、PreToolUse、PostToolUse
 - Hook 可以阻止执行、返回阻止原因、注入消息、改写工具输入
 - 权限检查作为 PreToolUse hook 接入，不再写死在 ToolRuntime
@@ -324,7 +325,7 @@ ModelClient        封装模型调用和响应解析
 
 **测试指令：**
 
-启动时选择 `plan`，再运行：
+启动时选择 plan，再运行：
 
 ```
 请读取 package.json，然后创建 src/hook-blocked.ts。
@@ -333,3 +334,54 @@ ModelClient        封装模型调用和响应解析
 预期：读取可以继续，写文件会被权限 hook 阻止。
 
 **注意：block 以后其他 tool 被执行是合法的。**
+
+### s09 记忆系统
+
+**分支：**
+
+- feat/s09
+
+**为什么需要这个功能：**
+
+- 有些信息应该跨会话保留，比如用户偏好、反复出现的反馈、项目里不容易从代码直接推导出的约定
+- 但不是所有上下文都应该进入记忆，代码结构、临时任务状态、当前 TODO 都应该按需重新读取或留在当前会话
+- 记忆系统要解决的是“下次还值得记住”的信息，而不是把聊天记录无差别塞进 prompt
+
+**核心功能说明：**
+
+- 新增 MemoryManager，启动时扫描 .memory/\*.md 并加载记忆
+- 每条记忆是一个带 frontmatter 的 Markdown 文件，MEMORY.md 是自动重建的索引
+- 支持四类记忆：user、feedback、project、reference
+- 新增 save_memory 工具，模型可以在合适时保存跨会话信息
+- system prompt 每轮都会重新构建，所以本轮刚保存的记忆会在下一轮可见
+
+**其他功能说明：**
+
+- 新增 /memories 命令，用来查看当前进程已加载的记忆列表
+- 新增 DreamConsolidator 骨架，用于后续合并、去重、裁剪记忆
+
+**测试指令：**
+
+先运行：
+
+```
+请记住：我更喜欢 TypeScript 代码里用清晰的小模块，而不是把所有逻辑堆在一个大文件里。
+```
+
+预期：模型应该调用 save_memory，在 .memory 下生成对应 Markdown 文件，并重建 .memory/MEMORY.md。
+
+然后运行：
+
+```
+/memories
+```
+
+预期：能看到刚保存的记忆。
+
+再次运行：
+
+```
+根据你记住的偏好，简单说一下以后实现功能时应该注意什么。
+```
+
+预期：模型会参考刚写入的记忆回答。
