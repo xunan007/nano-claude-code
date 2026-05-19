@@ -16,6 +16,7 @@
 - [上下文压缩｜s06](./doc/wiki/上下文压缩.md)
 - [s01-s06 代码重构](./doc/wiki/s01-s06%20代码重构.md)
 - [权限系统｜s07](./doc/wiki/权限系统.md)
+- [Hook 系统｜s08](./doc/wiki/Hook%20系统.md)
 
 ## 不同分支对应的阶段代码
 
@@ -295,3 +296,40 @@ ModelClient        封装模型调用和响应解析
 ```
 
 预期：读取会自动允许，bash 会询问用户是否批准。
+
+### s08 Hook 系统
+
+**分支：**
+
+- feat/s08
+
+**为什么需要这个功能：**
+
+- agent loop 随着功能的增加会有很多主线外的逻辑
+- 需要有一个机制能够在主线运行的不同时机插入执行不同的动作
+
+**核心功能说明：**
+
+- 新增进程内 `HookManager`，通过 `registerHook` 注册 TypeScript hook
+- 支持三个事件：SessionStart、PreToolUse、PostToolUse
+- Hook 可以阻止执行、返回阻止原因、注入消息、改写工具输入
+- 权限检查作为 PreToolUse hook 接入，不再写死在 ToolRuntime
+- todo reminder 保留在 AgentLoop 主流程里
+
+**其他功能说明：**
+
+- Hook 不直接修改 messages，只返回结构化结果
+- 父代理和子代理共享同一个 HookManager
+- 当前单工具执行顺序：PreToolUse -> tool handler -> PostToolUse
+
+**测试指令：**
+
+启动时选择 `plan`，再运行：
+
+```
+请读取 package.json，然后创建 src/hook-blocked.ts。
+```
+
+预期：读取可以继续，写文件会被权限 hook 阻止。
+
+**注意：block 以后其他 tool 被执行是合法的。**

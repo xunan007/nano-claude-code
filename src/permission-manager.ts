@@ -117,7 +117,10 @@ export class PermissionManager {
         toolName: string,
         toolInput: Record<string, unknown>,
     ): PermissionDecision {
-        // 1. bash 比较特殊，前置做一层校验
+        let bashFlagReason: string | undefined;
+
+        // 1. bash 比较特殊，严重风险前置拒绝；非严重风险先记录，
+        // 等 mode check 之后再决定是否询问，避免绕过 plan mode。
         if (toolName === "bash") {
             const command = getString(toolInput.command);
             const failures = this.bashValidator.validate(command);
@@ -134,10 +137,7 @@ export class PermissionManager {
                         reason: `Bash validator: ${description}`,
                     };
                 }
-                return {
-                    behavior: "ask",
-                    reason: `Bash validator flagged: ${description}`,
-                };
+                bashFlagReason = `Bash validator flagged: ${description}`;
             }
         }
 
@@ -173,6 +173,13 @@ export class PermissionManager {
             return {
                 behavior: "allow",
                 reason: "Auto mode: read-only tool auto-approved",
+            };
+        }
+
+        if (bashFlagReason) {
+            return {
+                behavior: "ask",
+                reason: bashFlagReason,
             };
         }
 

@@ -6,7 +6,7 @@ import type { ChatCompletionTool } from "openai/resources/chat/completions";
 
 import { BASH_TIMEOUT_MS, WORKDIR } from "./config";
 import type { CompactManager } from "./compact-manager";
-import type { PermissionManager } from "./permission-manager";
+import type { HookManager, PreToolUseContext } from "./hook-manager";
 import type { SkillRegistry } from "./skill-registry";
 import type { TodoManager } from "./todo-manager";
 import type { ContentBlock } from "./types";
@@ -24,7 +24,7 @@ type ToolEntry = {
 type ToolRuntimeOptions = {
     compactManager: CompactManager;
     skillRegistry: SkillRegistry;
-    permissionManager?: PermissionManager | undefined;
+    hookManager?: HookManager | undefined;
     todoManager?: TodoManager;
     runSubagent?: (prompt: string) => Promise<string>;
     enableCompactTool?: boolean;
@@ -235,40 +235,31 @@ export class ToolRuntime {
                 continue;
             }
 
-            const permissionManager = this.options.permissionManager;
-            const decision = permissionManager?.check(block.name, block.input);
-            if (decision?.behavior === "deny") {
-                const output = `Permission denied: ${decision.reason}`;
-                console.log(`  [DENIED] ${block.name}: ${decision.reason}`);
-                results.push({
-                    type: "tool_result",
-                    tool_use_id: block.id,
-                    content: output,
-                });
-                continue;
-            }
-
-            if (decision?.behavior === "ask") {
-                const approved = await permissionManager?.askUser(
-                    block.name,
-                    block.input,
-                );
-                if (!approved) {
-                    const output = `Permission denied by user for ${block.name}`;
-                    console.log(`  [USER DENIED] ${block.name}`);
-                    if (
-                        permissionManager &&
-                        permissionManager.consecutiveDenials >=
-                            permissionManager.maxConsecutiveDenials
-                    ) {
-                        console.log(
-                            `  [${permissionManager.consecutiveDenials} consecutive denials -- consider switching to plan mode]`,
-                        );
-                    }
+            const toolContext: PreToolUseContext = {
+                toolName: block.name,
+                toolInput: { ...block.input },
+                toolUseId: block.id,
+            };
+            const preResult = await this.options.hookManager?.runHooks(
+                "PreToolUse",
+                toolContext,
+            );
+            if (preResult) {
+                for (const message of preResult.messages ?? []) {
                     results.push({
                         type: "tool_result",
                         tool_use_id: block.id,
-                        content: output,
+                        content: `[Hook message]: ${message}`,
+                    });
+                }
+                if (preResult.blocked) {
+                    const reason =
+                        preResult.blockReason ??
+                        "Tool blocked by PreToolUse hook";
+                    results.push({
+                        type: "tool_result",
+                        tool_use_id: block.id,
+                        content: reason,
                     });
                     continue;
                 }
@@ -278,7 +269,10 @@ export class ToolRuntime {
             const handlerResult = entry
                 ? await (async () => {
                       try {
-                          return await entry.handler(block.input, block.id);
+                          return await entry.handler(
+                              toolContext.toolInput,
+                              block.id,
+                          );
                       } catch (error: unknown) {
                           return `Error: ${
                               error instanceof Error
@@ -294,10 +288,24 @@ export class ToolRuntime {
             }
             console.log(handlerResult.slice(0, 200));
 
+            const postResult = await this.options.hookManager?.runHooks(
+                "PostToolUse",
+                {
+                    ...toolContext,
+                    toolOutput: handlerResult,
+                },
+            );
+            const hookNotes = (postResult?.messages ?? [])
+                .map((message) => `[Hook note]: ${message}`)
+                .join("\n");
+            const resultContent = hookNotes
+                ? `${handlerResult}\n${hookNotes}`
+                : handlerResult;
+
             results.push({
                 type: "tool_result",
                 tool_use_id: block.id,
-                content: handlerResult,
+                content: resultContent,
             });
         }
 

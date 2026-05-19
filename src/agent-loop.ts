@@ -1,8 +1,8 @@
 import { WORKDIR } from "./config";
 import { CompactManager } from "./compact-manager";
+import type { HookManager } from "./hook-manager";
 import type { MessageCodec } from "./message-codec";
 import type { ModelClient } from "./model-client";
-import type { PermissionManager } from "./permission-manager";
 import type { PromptBuilder } from "./prompt-builder";
 import type { SkillRegistry } from "./skill-registry";
 import type { TodoManager } from "./todo-manager";
@@ -22,7 +22,7 @@ type AgentLoopOptions = {
     messageCodec: MessageCodec;
     modelClient: ModelClient;
     compactManager: CompactManager;
-    permissionManager?: PermissionManager;
+    hookManager?: HookManager;
 };
 
 export class AgentLoop {
@@ -32,7 +32,7 @@ export class AgentLoop {
         this.parentRuntime = new ToolRuntime({
             compactManager: options.compactManager,
             skillRegistry: options.skillRegistry,
-            permissionManager: options.permissionManager,
+            hookManager: options.hookManager,
             todoManager: options.todoManager,
             runSubagent: (prompt) => this.runSubagent(prompt),
             enableCompactTool: true,
@@ -61,7 +61,7 @@ export class AgentLoop {
         const childRuntime = new ToolRuntime({
             compactManager: childCompactManager,
             skillRegistry: this.options.skillRegistry,
-            permissionManager: this.options.permissionManager,
+            hookManager: this.options.hookManager,
         });
         let response: ModelResponse | undefined;
 
@@ -139,12 +139,12 @@ export class AgentLoop {
             return false;
         }
 
-        // 插入 todo 工具逻辑：开启 todo 之后需要及时检查一下任务清单是否更新
-            const reminder =
-                this.options.todoManager.noteToolRoundWithoutTodoUpdate(!this.hasToolUse(response.content, "todo"));
-            if (reminder) {
-                results.push({ type: "text", text: reminder });
-            }
+        const reminder = this.options.todoManager.noteToolRoundWithoutTodoUpdate(
+            this.hasToolUse(response.content, "todo"),
+        );
+        if (reminder) {
+            results.push({ type: "text", text: reminder });
+        }
 
         state.messages.push({ role: "user", content: results });
 
