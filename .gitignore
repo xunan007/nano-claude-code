@@ -9,3 +9,4 @@ coverage/
 .debug
 .task_outputs
 .transcripts
+.tasks

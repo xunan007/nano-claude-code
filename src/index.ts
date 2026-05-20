@@ -21,7 +21,7 @@ import {
 } from "./permission-cli";
 import { PromptBuilder } from "./prompt-builder";
 import { SkillRegistry } from "./skill-registry";
-import { TodoManager } from "./todo-manager";
+import { TaskManager } from "./task-manager";
 import type { Message } from "./types";
 
 function loadDotEnv(path = ".env"): void {
@@ -41,7 +41,7 @@ function writeMessageTrace(messages: Message[]): void {
 async function readQuery(
     rl: ReturnType<typeof createInterface>,
 ): Promise<string> {
-    const firstLine = await rl.question("\x1b[36ms11 >> \x1b[0m");
+    const firstLine = await rl.question("\x1b[36ms12 >> \x1b[0m");
     if (firstLine.trim() !== '"""') {
         return firstLine;
     }
@@ -62,6 +62,7 @@ async function readQuery(
 function createAgentLoop(
     hookManager: HookManager,
     memoryManager: MemoryManager,
+    taskManager: TaskManager,
 ): {
     agentLoop: AgentLoop;
     messageCodec: MessageCodec;
@@ -70,16 +71,15 @@ function createAgentLoop(
     const modelClient = new ModelClient(messageCodec);
     const compactManager = new CompactManager(modelClient, messageCodec);
     const skillRegistry = new SkillRegistry(SKILLS_DIR);
-    const todoManager = new TodoManager();
     const promptBuilder = new PromptBuilder();
     const agentLoop = new AgentLoop({
         promptBuilder,
         skillRegistry,
-        todoManager,
         messageCodec,
         modelClient,
         compactManager,
         memoryManager,
+        taskManager,
         hookManager,
     });
 
@@ -100,6 +100,7 @@ async function main(): Promise<void> {
     }
 
     const history: Message[] = [];
+    const taskManager = new TaskManager();
     const rl = createInterface({ input, output });
 
     try {
@@ -111,11 +112,13 @@ async function main(): Promise<void> {
         const { agentLoop, messageCodec } = createAgentLoop(
             hookManager,
             memoryManager,
+            taskManager,
         );
         const fullPrompt = agentLoop.parentSystemPrompt();
         console.log(
             `[System prompt assembled: ${fullPrompt.length} chars, ~${agentLoop.systemPromptSections().length} sections]`,
         );
+        console.log("[Persistent tasks enabled: .tasks/task_<id>.json]");
         console.log(
             "[Error recovery enabled: max_tokens / prompt_too_long / connection backoff]",
         );

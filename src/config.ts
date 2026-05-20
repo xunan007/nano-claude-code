@@ -11,6 +11,7 @@ export const WORKDIR = process.cwd();
 export const SKILLS_DIR = resolve(WORKDIR, ".skills");
 export const MEMORY_DIR = resolve(WORKDIR, ".memory");
 export const MEMORY_INDEX = resolve(MEMORY_DIR, "MEMORY.md");
+export const TASKS_DIR = resolve(WORKDIR, ".tasks");
 export const PLAN_REMINDER_INTERVAL = 3;
 export const CONTEXT_LIMIT = 50_000;
 export const KEEP_RECENT_TOOL_RESULTS = 3;

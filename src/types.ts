@@ -39,19 +39,6 @@ export type MessageCreateOptions = {
     tools?: ChatCompletionTool[];
 };
 
-export type PlanStatus = "pending" | "in_progress" | "completed";
-
-export type PlanItem = {
-    content: string;
-    status: PlanStatus;
-    activeForm: string;
-};
-
-export type PlanningState = {
-    items: PlanItem[];
-    roundsSinceUpdate: number;
-};
-
 export type SkillManifest = {
     name: string;
     description: string;

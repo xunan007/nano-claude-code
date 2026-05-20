@@ -1,4 +1,4 @@
-export const PERMISSION_MODES = ["default", "plan", "auto"] as const;
+export const PERMISSION_MODES = ["default", "plan", "auto", "bypass"] as const;
 
 export type PermissionMode = (typeof PERMISSION_MODES)[number];
 
@@ -32,13 +32,20 @@ type BashValidationFailure = {
     pattern: RegExp;
 };
 
-export const READ_ONLY_TOOLS = new Set(["read_file", "load_skill", "compact"]);
+export const READ_ONLY_TOOLS = new Set([
+    "read_file",
+    "load_skill",
+    "compact",
+    "task_list",
+    "task_get",
+]);
 export const WRITE_TOOLS = new Set([
     "bash",
     "write_file",
     "edit_file",
-    "todo",
     "task",
+    "task_create",
+    "task_update",
 ]);
 
 export const DEFAULT_PERMISSION_RULES: PermissionRule[] = [
@@ -46,6 +53,8 @@ export const DEFAULT_PERMISSION_RULES: PermissionRule[] = [
     { tool: "bash", content: "sudo *", behavior: "deny" },
     { tool: "read_file", path: "*", behavior: "allow" },
     { tool: "load_skill", path: "*", behavior: "allow" },
+    { tool: "task_list", path: "*", behavior: "allow" },
+    { tool: "task_get", path: "*", behavior: "allow" },
 ];
 
 export class BashSecurityValidator {
@@ -155,6 +164,14 @@ export class PermissionManager {
         }
 
         // 3. 根据模式校验
+
+        if (this.mode === "bypass") {
+            this.consecutiveDenials = 0;
+            return {
+                behavior: "allow",
+                reason: "Bypass mode: all non-denied tools auto-approved",
+            };
+        }
 
         if (this.mode === "plan") {
             if (WRITE_TOOLS.has(toolName)) {

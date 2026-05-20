@@ -83,7 +83,7 @@ export class PromptBuilder {
             "The user controls permissions. Some tool calls may be denied.",
             "Use load_skill when a task needs specialized instructions before you act.",
             "Use compact if the conversation gets too long.",
-            "Use the todo tool for multi-step work when it is available.",
+            "Use task tools to plan and track durable work graph tasks.",
             "Keep exactly one step in_progress when a task has multiple steps.",
             "Refresh the plan as work advances. Prefer tools over prose.",
             subagentLine,
@@ -152,14 +152,6 @@ export class PromptBuilder {
             `Platform: ${platform()}`,
         ].join("\n");
     }
-}
-
-export function buildSystemReminder(extra?: string): string | undefined {
-    if (!extra) {
-        return undefined;
-    }
-
-    return `<system-reminder>\n${extra}\n</system-reminder>`;
 }
 
 const MEMORY_GUIDANCE = `# Memory guidance

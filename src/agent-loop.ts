@@ -10,9 +10,9 @@ import type { HookManager } from "./hook-manager";
 import type { MemoryManager } from "./memory-manager";
 import type { MessageCodec } from "./message-codec";
 import type { ModelClient } from "./model-client";
-import { buildSystemReminder, type PromptBuilder } from "./prompt-builder";
+import type { PromptBuilder } from "./prompt-builder";
 import type { SkillRegistry } from "./skill-registry";
-import type { TodoManager } from "./todo-manager";
+import type { TaskManager } from "./task-manager";
 import { ToolRuntime } from "./tool-runtime";
 import type {
     LoopState,
@@ -26,11 +26,11 @@ import type {
 type AgentLoopOptions = {
     promptBuilder: PromptBuilder;
     skillRegistry: SkillRegistry;
-    todoManager: TodoManager;
     messageCodec: MessageCodec;
     modelClient: ModelClient;
     compactManager: CompactManager;
     memoryManager?: MemoryManager;
+    taskManager?: TaskManager;
     hookManager?: HookManager;
 };
 
@@ -43,11 +43,13 @@ export class AgentLoop {
             compactManager: options.compactManager,
             skillRegistry: options.skillRegistry,
             hookManager: options.hookManager,
-            todoManager: options.todoManager,
             runSubagent: (prompt) => this.runSubagent(prompt),
             enableCompactTool: true,
             ...(options.memoryManager
                 ? { memoryManager: options.memoryManager }
+                : {}),
+            ...(options.taskManager
+                ? { taskManager: options.taskManager }
                 : {}),
         });
     }
@@ -89,6 +91,9 @@ export class AgentLoop {
             hookManager: this.options.hookManager,
             ...(this.options.memoryManager
                 ? { memoryManager: this.options.memoryManager }
+                : {}),
+            ...(this.options.taskManager
+                ? { taskManager: this.options.taskManager }
                 : {}),
         });
         let response: ModelResponse | undefined;
@@ -186,15 +191,6 @@ export class AgentLoop {
         if (results.length === 0) {
             delete state.transitionReason;
             return false;
-        }
-
-        const reminder =
-            this.options.todoManager.noteToolRoundWithoutTodoUpdate(
-                this.hasToolUse(response.content, "todo"),
-            );
-        const systemReminder = buildSystemReminder(reminder);
-        if (systemReminder) {
-            results.push({ type: "text", text: systemReminder });
         }
 
         state.messages.push({ role: "user", content: results });

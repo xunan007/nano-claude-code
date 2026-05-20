@@ -9,7 +9,7 @@ import type { CompactManager } from "./compact-manager";
 import type { HookManager, PreToolUseContext } from "./hook-manager";
 import { MEMORY_TYPES, type MemoryManager } from "./memory-manager";
 import type { SkillRegistry } from "./skill-registry";
-import type { TodoManager } from "./todo-manager";
+import type { TaskManager } from "./task-manager";
 import type { ContentBlock } from "./types";
 
 type ToolHandler = (
@@ -26,8 +26,8 @@ type ToolRuntimeOptions = {
     compactManager: CompactManager;
     skillRegistry: SkillRegistry;
     memoryManager?: MemoryManager;
+    taskManager?: TaskManager;
     hookManager?: HookManager | undefined;
-    todoManager?: TodoManager;
     runSubagent?: (prompt: string) => Promise<string>;
     enableCompactTool?: boolean;
 };
@@ -147,41 +147,6 @@ const SAVE_MEMORY_TOOL_DEFINITION: ChatCompletionTool = {
     },
 };
 
-const TODO_TOOL_DEFINITION: ChatCompletionTool = {
-    type: "function",
-    function: {
-        name: "todo",
-        description: "Rewrite the current session plan for multi-step work.",
-        parameters: {
-            type: "object",
-            properties: {
-                items: {
-                    type: "array",
-                    items: {
-                        type: "object",
-                        properties: {
-                            content: { type: "string" },
-                            status: {
-                                type: "string",
-                                enum: ["pending", "in_progress", "completed"],
-                            },
-                            activeForm: {
-                                type: "string",
-                                description:
-                                    "Optional present-continuous label.",
-                            },
-                        },
-                        required: ["content", "status"],
-                        additionalProperties: false,
-                    },
-                },
-            },
-            required: ["items"],
-            additionalProperties: false,
-        },
-    },
-};
-
 const TASK_TOOL_DEFINITION: ChatCompletionTool = {
     type: "function",
     function: {
@@ -222,6 +187,88 @@ const COMPACT_TOOL_DEFINITION: ChatCompletionTool = {
     },
 };
 
+const PERSISTENT_TASK_TOOL_DEFINITIONS: ChatCompletionTool[] = [
+    {
+        type: "function",
+        function: {
+            name: "task_create",
+            description: "Create a new task.",
+            parameters: {
+                type: "object",
+                properties: {
+                    subject: { type: "string" },
+                    description: { type: "string" },
+                },
+                required: ["subject"],
+                additionalProperties: false,
+            },
+        },
+    },
+    {
+        type: "function",
+        function: {
+            name: "task_update",
+            description: "Update a task's status, owner, or dependencies.",
+            parameters: {
+                type: "object",
+                properties: {
+                    task_id: { type: "integer" },
+                    status: {
+                        type: "string",
+                        enum: [
+                            "pending",
+                            "in_progress",
+                            "completed",
+                            "deleted",
+                        ],
+                    },
+                    owner: {
+                        type: "string",
+                        description: "Set when a teammate claims the task",
+                    },
+                    addBlockedBy: {
+                        type: "array",
+                        items: { type: "integer" },
+                    },
+                    addBlocks: {
+                        type: "array",
+                        items: { type: "integer" },
+                    },
+                },
+                required: ["task_id"],
+                additionalProperties: false,
+            },
+        },
+    },
+    {
+        type: "function",
+        function: {
+            name: "task_list",
+            description: "List all tasks with status summary.",
+            parameters: {
+                type: "object",
+                properties: {},
+                additionalProperties: false,
+            },
+        },
+    },
+    {
+        type: "function",
+        function: {
+            name: "task_get",
+            description: "Get full details of a task by ID.",
+            parameters: {
+                type: "object",
+                properties: {
+                    task_id: { type: "integer" },
+                },
+                required: ["task_id"],
+                additionalProperties: false,
+            },
+        },
+    },
+];
+
 export class ToolRuntime {
     private readonly entries = new Map<string, ToolEntry>();
 
@@ -239,12 +286,37 @@ export class ToolRuntime {
                     ) ?? "No memory manager configured",
             );
         }
-        if (options.todoManager) {
+        if (options.taskManager) {
             this.register(
-                TODO_TOOL_DEFINITION,
+                PERSISTENT_TASK_TOOL_DEFINITIONS[0]!,
                 (input) =>
-                    options.todoManager?.update(requireArray(input, "items")) ??
-                    "No todo manager configured",
+                    options.taskManager?.create(
+                        requireString(input, "subject"),
+                        optionalString(input, "description") ?? "",
+                    ) ?? "No task manager configured",
+            );
+            this.register(
+                PERSISTENT_TASK_TOOL_DEFINITIONS[1]!,
+                (input) =>
+                    options.taskManager?.update(
+                        requireNumber(input, "task_id"),
+                        optionalString(input, "status"),
+                        optionalString(input, "owner"),
+                        optionalNumberArray(input, "addBlockedBy"),
+                        optionalNumberArray(input, "addBlocks"),
+                    ) ?? "No task manager configured",
+            );
+            this.register(
+                PERSISTENT_TASK_TOOL_DEFINITIONS[2]!,
+                () =>
+                    options.taskManager?.listAll() ??
+                    "No task manager configured",
+            );
+            this.register(
+                PERSISTENT_TASK_TOOL_DEFINITIONS[3]!,
+                (input) =>
+                    options.taskManager?.get(requireNumber(input, "task_id")) ??
+                    "No task manager configured",
             );
         }
         if (options.runSubagent) {
@@ -504,10 +576,41 @@ function optionalNumber(
     return value;
 }
 
-function requireArray(input: Record<string, unknown>, key: string): unknown[] {
+function requireNumber(input: Record<string, unknown>, key: string): number {
     const value = input[key];
-    if (!Array.isArray(value)) {
-        throw new Error(`${key} must be an array`);
+    if (typeof value !== "number") {
+        throw new Error(`${key} must be a number`);
+    }
+    return value;
+}
+
+function optionalString(
+    input: Record<string, unknown>,
+    key: string,
+): string | undefined {
+    const value = input[key];
+    if (value === undefined) {
+        return undefined;
+    }
+    if (typeof value !== "string") {
+        throw new Error(`${key} must be a string`);
+    }
+    return value;
+}
+
+function optionalNumberArray(
+    input: Record<string, unknown>,
+    key: string,
+): number[] | undefined {
+    const value = input[key];
+    if (value === undefined) {
+        return undefined;
+    }
+    if (
+        !Array.isArray(value) ||
+        value.some((item) => typeof item !== "number")
+    ) {
+        throw new Error(`${key} must be an array of numbers`);
     }
     return value;
 }

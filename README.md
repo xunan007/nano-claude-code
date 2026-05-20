@@ -443,3 +443,33 @@ _注：真实设计可以通过 search_memory 动态加载记忆_
 - prompt 过长时，触发 compactHistory 压缩历史后重试
 - 连接错误、限流、临时服务错误时，使用指数退避重试
 - compact 自身失败时会写入降级摘要，避免恢复流程二次崩溃
+
+### s12 任务系统
+
+**分支：**
+
+- feat/s12
+
+**为什么需要这个功能：**
+
+- 当前会话里的计划会随着上下文压缩或会话结束丢失
+- 有些工作项需要持久保存，并且表达前后依赖关系
+
+**核心功能说明：**
+
+- 新增 TaskManager，任务以 JSON 文件保存在 .tasks/task\_<id>.json
+- 新增 task_create、task_update、task_list、task_get 工具
+- 每个任务包含 id、subject、description、status、blockedBy、blocks、owner
+- 支持 blockedBy / blocks 依赖图
+- 完成某个任务后，会从其他任务的 blockedBy 中移除该任务
+
+**其他功能说明：**
+
+- 原来的运行时 todo 工具已由持久任务系统替代
+- 新增 bypass 模式，方便运行验证
+
+**测试指令：**
+
+```
+
+```
