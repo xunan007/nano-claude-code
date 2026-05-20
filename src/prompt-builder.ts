@@ -56,6 +56,7 @@ export class PromptBuilder {
             this.buildMemorySection(options.memoryManager),
             this.buildMemoryGuidance(options.memoryManager),
             TASK_GUIDANCE,
+            BACKGROUND_GUIDANCE,
             this.buildClaudeMd(options.workdir),
             DYNAMIC_BOUNDARY,
             this.buildDynamicContext(options.workdir),
@@ -84,6 +85,7 @@ export class PromptBuilder {
             "The user controls permissions. Some tool calls may be denied.",
             "Use load_skill when a task needs specialized instructions before you act.",
             "Use compact if the conversation gets too long.",
+            "Use background_run for long-running commands and check_background to inspect runtime background tasks.",
             "Use task tools to plan and track durable work graph tasks.",
             "Keep exactly one step in_progress when a task has multiple steps.",
             "Refresh the plan as work advances. Prefer tools over prose.",
@@ -180,3 +182,9 @@ Respect dependency fields:
 - Use addBlockedBy on a blocked task when that is more natural; this also updates the prerequisite task's blocks list.
 - Before starting or completing a task, check whether blockedBy is empty.
 - After completing a task, list or get affected tasks to verify dependency cleanup.`;
+
+const BACKGROUND_GUIDANCE = `# Background task guidance
+Background tasks are runtime execution slots, not durable task-board records.
+Use background_run for slow commands so the agent can keep working while the command runs.
+Before each model call, completed background results may arrive inside <background-results>.
+Use check_background to inspect one task by task_id or list all runtime background tasks.`;

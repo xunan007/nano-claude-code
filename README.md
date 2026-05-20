@@ -18,6 +18,7 @@
 - [权限系统｜s07](./doc/wiki/权限系统.md)
 - [Hook 系统｜s08](./doc/wiki/Hook%20系统.md)
 - [记忆系统｜s09](./doc/wiki/记忆系统.md)
+- [后台任务｜s13](./doc/wiki/后台任务.md)
 
 ## 不同分支对应的阶段代码
 
@@ -469,8 +470,26 @@ _注：真实设计可以通过 search_memory 动态加载记忆_
 - 新增 bypass 模式，方便运行验证
 - system prompt 对 task 的使用新增了说明约束
 
-**测试指令：**
+### s13 后台任务
 
-```
+**分支：**
 
-```
+- feat/s13
+
+**为什么需要这个功能：**
+
+- 有些命令运行时间比较长，如果用普通 bash，会阻塞整个 agent loop
+- 后台任务允许慢命令先启动，模型继续做其他工作，等结果完成后再回到上下文里
+
+**核心功能说明：**
+
+- 新增 BackgroundManager，用来管理运行时后台执行槽
+- 新增 background_run 工具，启动后台命令并立即返回 task_id
+- 新增 check_background 工具，查看某个后台任务或列出全部后台任务
+- 后台任务状态会写入 .runtime-tasks/<id>.json，完整输出写入 .runtime-tasks/<id>.log
+- 每次模型调用前，AgentLoop 会 drain 后台完成通知，并以 background-results 注入上下文
+
+**当前功能局限：**
+
+- loop 不会自动等待强依赖任务完成，模型需要使用 check_background 判断是否可以继续
+- 当前没有 wait_background、取消任务、任务调度器或 worker pool

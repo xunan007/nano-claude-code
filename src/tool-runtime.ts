@@ -5,6 +5,7 @@ import { dirname, isAbsolute, relative, resolve } from "node:path";
 import type { ChatCompletionTool } from "openai/resources/chat/completions";
 
 import { BASH_TIMEOUT_MS, WORKDIR } from "./config";
+import type { BackgroundManager } from "./background-manager";
 import type { CompactManager } from "./compact-manager";
 import type { HookManager, PreToolUseContext } from "./hook-manager";
 import { MEMORY_TYPES, type MemoryManager } from "./memory-manager";
@@ -25,6 +26,7 @@ type ToolEntry = {
 type ToolRuntimeOptions = {
     compactManager: CompactManager;
     skillRegistry: SkillRegistry;
+    backgroundManager?: BackgroundManager;
     memoryManager?: MemoryManager;
     taskManager?: TaskManager;
     hookManager?: HookManager | undefined;
@@ -271,6 +273,40 @@ const PERSISTENT_TASK_TOOL_DEFINITIONS: ChatCompletionTool[] = [
     },
 ];
 
+const BACKGROUND_TOOL_DEFINITIONS: ChatCompletionTool[] = [
+    {
+        type: "function",
+        function: {
+            name: "background_run",
+            description:
+                "Run command in background thread. Returns task_id immediately.",
+            parameters: {
+                type: "object",
+                properties: {
+                    command: { type: "string" },
+                },
+                required: ["command"],
+                additionalProperties: false,
+            },
+        },
+    },
+    {
+        type: "function",
+        function: {
+            name: "check_background",
+            description:
+                "Check background task status. Omit task_id to list all.",
+            parameters: {
+                type: "object",
+                properties: {
+                    task_id: { type: "string" },
+                },
+                additionalProperties: false,
+            },
+        },
+    },
+];
+
 export class ToolRuntime {
     private readonly entries = new Map<string, ToolEntry>();
 
@@ -319,6 +355,22 @@ export class ToolRuntime {
                 (input) =>
                     options.taskManager?.get(requireNumber(input, "task_id")) ??
                     "No task manager configured",
+            );
+        }
+        if (options.backgroundManager) {
+            this.register(
+                BACKGROUND_TOOL_DEFINITIONS[0]!,
+                (input) =>
+                    options.backgroundManager?.run(
+                        requireString(input, "command"),
+                    ) ?? "No background manager configured",
+            );
+            this.register(
+                BACKGROUND_TOOL_DEFINITIONS[1]!,
+                (input) =>
+                    options.backgroundManager?.check(
+                        optionalString(input, "task_id"),
+                    ) ?? "No background manager configured",
             );
         }
         if (options.runSubagent) {

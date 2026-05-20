@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import { config as loadEnvFile } from "dotenv";
 
 import { AgentLoop } from "./agent-loop";
+import { BackgroundManager } from "./background-manager";
 import { MESSAGE_TRACE_PATH, SKILLS_DIR, WORKDIR } from "./config";
 import { CompactManager } from "./compact-manager";
 import { HookManager } from "./hook-manager";
@@ -41,7 +42,7 @@ function writeMessageTrace(messages: Message[]): void {
 async function readQuery(
     rl: ReturnType<typeof createInterface>,
 ): Promise<string> {
-    const firstLine = await rl.question("\x1b[36ms12 >> \x1b[0m");
+    const firstLine = await rl.question("\x1b[36ms13 >> \x1b[0m");
     if (firstLine.trim() !== '"""') {
         return firstLine;
     }
@@ -63,6 +64,7 @@ function createAgentLoop(
     hookManager: HookManager,
     memoryManager: MemoryManager,
     taskManager: TaskManager,
+    backgroundManager: BackgroundManager,
 ): {
     agentLoop: AgentLoop;
     messageCodec: MessageCodec;
@@ -78,6 +80,7 @@ function createAgentLoop(
         messageCodec,
         modelClient,
         compactManager,
+        backgroundManager,
         memoryManager,
         taskManager,
         hookManager,
@@ -100,6 +103,7 @@ async function main(): Promise<void> {
     }
 
     const history: Message[] = [];
+    const backgroundManager = new BackgroundManager();
     const taskManager = new TaskManager();
     const rl = createInterface({ input, output });
 
@@ -113,12 +117,14 @@ async function main(): Promise<void> {
             hookManager,
             memoryManager,
             taskManager,
+            backgroundManager,
         );
         const fullPrompt = agentLoop.parentSystemPrompt();
         console.log(
             `[System prompt assembled: ${fullPrompt.length} chars, ~${agentLoop.systemPromptSections().length} sections]`,
         );
         console.log("[Persistent tasks enabled: .tasks/task_<id>.json]");
+        console.log("[Background tasks enabled: .runtime-tasks/<id>.json]");
         console.log(
             "[Error recovery enabled: max_tokens / prompt_too_long / connection backoff]",
         );

@@ -5,6 +5,7 @@ import {
     MAX_RECOVERY_ATTEMPTS,
     WORKDIR,
 } from "./config";
+import type { BackgroundManager } from "./background-manager";
 import { CompactManager } from "./compact-manager";
 import type { HookManager } from "./hook-manager";
 import type { MemoryManager } from "./memory-manager";
@@ -29,6 +30,7 @@ type AgentLoopOptions = {
     messageCodec: MessageCodec;
     modelClient: ModelClient;
     compactManager: CompactManager;
+    backgroundManager?: BackgroundManager;
     memoryManager?: MemoryManager;
     taskManager?: TaskManager;
     hookManager?: HookManager;
@@ -43,6 +45,9 @@ export class AgentLoop {
             compactManager: options.compactManager,
             skillRegistry: options.skillRegistry,
             hookManager: options.hookManager,
+            ...(options.backgroundManager
+                ? { backgroundManager: options.backgroundManager }
+                : {}),
             runSubagent: (prompt) => this.runSubagent(prompt),
             enableCompactTool: true,
             ...(options.memoryManager
@@ -89,6 +94,9 @@ export class AgentLoop {
             compactManager: childCompactManager,
             skillRegistry: this.options.skillRegistry,
             hookManager: this.options.hookManager,
+            ...(this.options.backgroundManager
+                ? { backgroundManager: this.options.backgroundManager }
+                : {}),
             ...(this.options.memoryManager
                 ? { memoryManager: this.options.memoryManager }
                 : {}),
@@ -99,6 +107,7 @@ export class AgentLoop {
         let response: ModelResponse | undefined;
 
         for (let turn = 0; turn < 30; turn += 1) {
+            this.drainBackgroundNotifications(subMessages);
             response = await this.createMessageWithRecovery(
                 subMessages,
                 {
@@ -156,6 +165,7 @@ export class AgentLoop {
             await this.options.compactManager.compactHistory(state.messages);
         }
 
+        this.drainBackgroundNotifications(state.messages);
         const response = await this.createMessageWithRecovery(
             state.messages,
             {
@@ -214,6 +224,25 @@ export class AgentLoop {
         state.turnCount += 1;
         state.transitionReason = "tool_result";
         return true;
+    }
+
+    private drainBackgroundNotifications(messages: Message[]): void {
+        const notifications =
+            this.options.backgroundManager?.drainNotifications() ?? [];
+        if (notifications.length === 0 || messages.length === 0) {
+            return;
+        }
+
+        const notifText = notifications
+            .map(
+                (notification) =>
+                    `[bg:${notification.task_id}] ${notification.status}: ${notification.preview} (output_file=${notification.output_file})`,
+            )
+            .join("\n");
+        messages.push({
+            role: "user",
+            content: `<background-results>\n${notifText}\n</background-results>`,
+        });
     }
 
     private async createMessageWithRecovery(

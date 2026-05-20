@@ -38,6 +38,7 @@ export const READ_ONLY_TOOLS = new Set([
     "compact",
     "task_list",
     "task_get",
+    "check_background",
 ]);
 export const WRITE_TOOLS = new Set([
     "bash",
@@ -46,6 +47,7 @@ export const WRITE_TOOLS = new Set([
     "task",
     "task_create",
     "task_update",
+    "background_run",
 ]);
 
 export const DEFAULT_PERMISSION_RULES: PermissionRule[] = [
@@ -55,6 +57,7 @@ export const DEFAULT_PERMISSION_RULES: PermissionRule[] = [
     { tool: "load_skill", path: "*", behavior: "allow" },
     { tool: "task_list", path: "*", behavior: "allow" },
     { tool: "task_get", path: "*", behavior: "allow" },
+    { tool: "check_background", path: "*", behavior: "allow" },
 ];
 
 export class BashSecurityValidator {
