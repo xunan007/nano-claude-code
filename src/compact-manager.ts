@@ -86,7 +86,7 @@ export class CompactManager {
         const transcriptPath = this.writeTranscript(messages);
         console.log(`[transcript saved: ${relative(WORKDIR, transcriptPath)}]`);
 
-        const summaryParts = [await this.summarizeHistory(messages)];
+        const summaryParts = [await this.summarizeHistorySafely(messages)];
         if (focus) {
             summaryParts.push(`Focus to preserve next: ${focus}`);
         }
@@ -104,7 +104,11 @@ export class CompactManager {
         this.state.lastSummary = summary;
         messages.splice(0, messages.length, {
             role: "user",
-            content: `This conversation was compacted so the agent can continue working.\n\n${summary}`,
+            content: [
+                "This session continues from a previous conversation that was compacted.",
+                `Summary of prior context:\n\n${summary}`,
+                "Continue from where we left off without re-asking the user.",
+            ].join("\n\n"),
         });
     }
 
@@ -147,5 +151,15 @@ export class CompactManager {
             .trim();
 
         return summary || "(summary unavailable)";
+    }
+
+    private async summarizeHistorySafely(messages: Message[]): Promise<string> {
+        try {
+            return await this.summarizeHistory(messages);
+        } catch (error: unknown) {
+            const message =
+                error instanceof Error ? error.message : String(error);
+            return `(compact failed: ${message}). Previous context lost.`;
+        }
     }
 }

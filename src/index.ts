@@ -41,7 +41,7 @@ function writeMessageTrace(messages: Message[]): void {
 async function readQuery(
     rl: ReturnType<typeof createInterface>,
 ): Promise<string> {
-    const firstLine = await rl.question("\x1b[36ms10 >> \x1b[0m");
+    const firstLine = await rl.question("\x1b[36ms11 >> \x1b[0m");
     if (firstLine.trim() !== '"""') {
         return firstLine;
     }
@@ -115,6 +115,9 @@ async function main(): Promise<void> {
         const fullPrompt = agentLoop.parentSystemPrompt();
         console.log(
             `[System prompt assembled: ${fullPrompt.length} chars, ~${agentLoop.systemPromptSections().length} sections]`,
+        );
+        console.log(
+            "[Error recovery enabled: max_tokens / prompt_too_long / connection backoff]",
         );
         const sessionStartResult = await hookManager.runHooks("SessionStart", {
             source: "startup",
