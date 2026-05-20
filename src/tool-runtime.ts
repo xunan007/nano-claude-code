@@ -208,7 +208,8 @@ const PERSISTENT_TASK_TOOL_DEFINITIONS: ChatCompletionTool[] = [
         type: "function",
         function: {
             name: "task_update",
-            description: "Update a task's status, owner, or dependencies.",
+            description:
+                "Update a task's status, owner, or dependencies. addBlockedBy adds prerequisites to this task and updates each prerequisite's blocks list. addBlocks records tasks unlocked by this task and also adds this task to each blocked task's blockedBy list.",
             parameters: {
                 type: "object",
                 properties: {
@@ -244,7 +245,8 @@ const PERSISTENT_TASK_TOOL_DEFINITIONS: ChatCompletionTool[] = [
         type: "function",
         function: {
             name: "task_list",
-            description: "List all tasks with status summary.",
+            description:
+                "List tasks with status, blockedBy, and blocks. After new tasks are created in the current process, this lists that current task set to avoid old task pollution.",
             parameters: {
                 type: "object",
                 properties: {},

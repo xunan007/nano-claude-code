@@ -23,6 +23,7 @@ export type TaskRecord = {
 
 export class TaskManager {
     private nextId: number;
+    private readonly createdThisSession = new Set<number>();
 
     constructor(private readonly tasksDir = TASKS_DIR) {
         mkdirSync(this.tasksDir, { recursive: true });
@@ -40,6 +41,7 @@ export class TaskManager {
             owner: "",
         };
         this.save(task);
+        this.createdThisSession.add(task.id);
         this.nextId += 1;
         return JSON.stringify(task, null, 2);
     }
@@ -73,6 +75,22 @@ export class TaskManager {
 
         if (addBlockedBy && addBlockedBy.length > 0) {
             task.blockedBy = [...new Set([...task.blockedBy, ...addBlockedBy])];
+            for (const prerequisiteId of addBlockedBy) {
+                try {
+                    const prerequisite = this.load(prerequisiteId);
+                    if (!prerequisite.blocks.includes(taskId)) {
+                        prerequisite.blocks.push(taskId);
+                        this.save(prerequisite);
+                    }
+                } catch (error: unknown) {
+                    if (
+                        !(error instanceof Error) ||
+                        error.message !== `Task ${prerequisiteId} not found`
+                    ) {
+                        throw error;
+                    }
+                }
+            }
         }
 
         if (addBlocks && addBlocks.length > 0) {
@@ -100,9 +118,7 @@ export class TaskManager {
     }
 
     listAll(): string {
-        const tasks = this.taskFiles().map((fileName) =>
-            JSON.parse(readFileSync(join(this.tasksDir, fileName), "utf8")),
-        ) as TaskRecord[];
+        const tasks = this.currentTaskRecords();
 
         if (tasks.length === 0) {
             return "No tasks.";
@@ -121,8 +137,12 @@ export class TaskManager {
                     task.blockedBy.length > 0
                         ? ` (blocked by: ${JSON.stringify(task.blockedBy)})`
                         : "";
+                const blocks =
+                    task.blocks.length > 0
+                        ? ` (blocks: ${JSON.stringify(task.blocks)})`
+                        : "";
                 const owner = task.owner ? ` owner=${task.owner}` : "";
-                return `${marker} #${task.id}: ${task.subject}${owner}${blocked}`;
+                return `${marker} #${task.id}: ${task.subject}${owner}${blocked}${blocks}`;
             })
             .join("\n");
     }
@@ -137,7 +157,17 @@ export class TaskManager {
     private taskFiles(): string[] {
         return readdirSync(this.tasksDir)
             .filter((fileName) => /^task_\d+\.json$/.test(fileName))
-            .sort();
+            .sort((a, b) => taskIdFromFile(a) - taskIdFromFile(b));
+    }
+
+    private currentTaskRecords(): TaskRecord[] {
+        const tasks = this.taskFiles().map((fileName) =>
+            JSON.parse(readFileSync(join(this.tasksDir, fileName), "utf8")),
+        ) as TaskRecord[];
+        if (this.createdThisSession.size === 0) {
+            return tasks;
+        }
+        return tasks.filter((task) => this.createdThisSession.has(task.id));
     }
 
     private load(taskId: number): TaskRecord {
@@ -170,4 +200,8 @@ export class TaskManager {
 
 function isTaskStatus(status: string): status is TaskStatus {
     return ["pending", "in_progress", "completed", "deleted"].includes(status);
+}
+
+function taskIdFromFile(fileName: string): number {
+    return Number(fileName.slice("task_".length, -".json".length));
 }

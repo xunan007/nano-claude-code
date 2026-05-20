@@ -55,6 +55,7 @@ export class PromptBuilder {
             this.buildSkillListing(options.skillRegistry),
             this.buildMemorySection(options.memoryManager),
             this.buildMemoryGuidance(options.memoryManager),
+            TASK_GUIDANCE,
             this.buildClaudeMd(options.workdir),
             DYNAMIC_BOUNDARY,
             this.buildDynamicContext(options.workdir),
@@ -168,3 +169,14 @@ When NOT to save:
 - Anything easily derivable from code (function signatures, file structure, directory layout)
 - Temporary task state (current branch, open PR numbers, current TODOs)
 - Secrets or credentials (API keys, passwords)`;
+
+const TASK_GUIDANCE = `# Persistent task guidance
+Task records are durable work items stored on disk, not worker processes.
+Use task_create/task_update/task_list/task_get to maintain the work graph.
+Respect dependency fields:
+- blockedBy lists task ids that must finish before this task should proceed.
+- blocks lists task ids that this task unlocks later.
+- Use addBlocks on a prerequisite task to declare what later tasks it blocks; this also updates the later task's blockedBy list.
+- Use addBlockedBy on a blocked task when that is more natural; this also updates the prerequisite task's blocks list.
+- Before starting or completing a task, check whether blockedBy is empty.
+- After completing a task, list or get affected tasks to verify dependency cleanup.`;
