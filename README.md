@@ -1,10 +1,37 @@
 # 项目说明
 
-> 基于 learn-claude-code 开发的 TypeScript 版本，底层使用 DeepSeek API。
+> 基于 learn-claude-code 学习过程中 vibe coding 出来的 TypeScript 版本，底层使用 DeepSeek API。
+
+参考：https://learn.shareai.run/zh/
+
+## 写在最前
+
+### 为什么要学习 learn-claude-code
+
+最开始接触 Claude Code 这类 Agent 系统时，直接进入复杂实现，心智负担会很重。
+
+通过学习这个最小化的版本，可以：
+
+1. 清晰地看见一个构建在 LLM 之上的“操作系统”是如何组织起来的。比如任务系统、后台任务、上下文管理、阻塞与恢复等机制，都可以类比真实操作系统里的调度、阻塞调用和资源管理；而在更完整的多 Agent 系统中，Agent 之间的协作、通信与互斥，也和线程协作有相似之处。
+
+2. 感受到 Agent 工程中的一些通用设计。比如为了保持 agent loop 主流程稳定，同时统一承载权限、拦截、日志等旁路逻辑，这里引入了 hook 机制；这种设计和 Vue 生命周期 hook 有异曲同工之处。
+
+3. 明确 Harness Engineering 需要围绕 LLM 本身的限制做哪些工程化处理，例如 Context Engineering、Memory、Error Retry、上下文压缩和工具结果管理等。
+
+因此，相比追求功能完整，建立一个小而完整的认知框架更重要。它能帮助我们继续拓展代码，并进一步理解 Claude Code 这类系统背后的具体实现策略。
+
+### 存在的局限
+
+- 这是一个最小化学习版本，部分功能还不完整，某些流程尚未形成严格闭环
+- 一些关键设计只呈现了基本形态，还需要结合真实工程继续深入理解
+- TypeScript 版本是学习过程中 vibe coding 出来的代码，主要用于理解概念和验证想法
+- 代码以教学展开为主，分层和模块边界较粗糙，不应直接等同于生产级工程框架
+
+**最后，作为一份学习材料，这个课程已经足够优秀。**
 
 ## 如何运行
 
-- 在当前目录下创建 .env 文件：`touch .env`
+- 在当前目录下创建 .env 文件：touch .env
 - 填入 DEEPSEEK_API_KEY/DEEPSEEK_MODEL_ID/DEEPSEEK_BASE_URL
 
 ## 文档说明
@@ -15,6 +42,10 @@
 - [技能系统｜s05](./doc/wiki/技能系统.md)
 - [上下文压缩｜s06](./doc/wiki/上下文压缩.md)
 - [s01-s06 代码重构](./doc/wiki/s01-s06%20代码重构.md)
+- [权限系统｜s07](./doc/wiki/权限系统.md)
+- [Hook 系统｜s08](./doc/wiki/Hook%20系统.md)
+- [记忆系统｜s09](./doc/wiki/记忆系统.md)
+- [后台任务｜s13](./doc/wiki/后台任务.md)
 
 ## 不同分支对应的阶段代码
 
@@ -135,12 +166,12 @@
 
 **其他功能说明：**
 
-- 父代理和子代理都可以调用 `load_skill`
-- 技能目录约定为 `.skills/**/SKILL.md`
+- 父代理和子代理都可以调用 load_skill
+- 技能目录约定为 .skills/\*\*/SKILL.md
 
 **测试指令：**
 
-先创建 `.skills/project-summary/SKILL.md`：
+先创建 .skills/project-summary/SKILL.md：
 
 ```md
 ---
@@ -188,9 +219,9 @@ Summarize scripts, runtime entry points, and likely development workflow.
 
 **其他功能说明：**
 
-- 新增 `compact` 工具，允许模型主动压缩历史
-- 压缩前会把完整 transcript 保存到 `.transcripts`
-- 大工具输出会保存到 `.task_outputs/tool-results`
+- 新增 compact 工具，允许模型主动压缩历史
+- 压缩前会把完整 transcript 保存到 .transcripts
+- 大工具输出会保存到 .task_outputs/tool-results
 
 **测试指令：**
 
@@ -246,3 +277,280 @@ ModelClient        封装模型调用和响应解析
 
 - agent loop 需要 hook，否则逻辑前处理和后处理会非常麻烦
 - skills/todo 这些 domain service 混杂在 tool adapter，后续要拆除出去
+
+### s07 权限系统
+
+**分支：**
+
+- feat/s07
+
+**为什么需要这个功能：**
+
+- 模型可能会写错文件、执行危险命令、在不该动手的时候动手
+- 所以模型执行的意图必须经过权限检查
+
+**核心功能说明：**
+
+- 新增 PermissionManager，所有工具调用执行前先经过权限管线
+- 权限管线顺序：bash 安全校验 -> deny rules -> mode check -> allow rules -> ask user
+- 支持三种模式：default、plan、auto
+- 支持 /mode 运行时切换模式，支持 /rules 查看当前规则
+
+**其他功能说明：**
+
+- 父代理和子代理共享同一个权限管理器
+- bash 命令会先检查 sudo、递归删除、命令替换、IFS 注入和 shell 元字符
+- 用户在询问中输入 always 后，会为当前工具追加临时 allow 规则
+
+**测试指令：**
+
+启动时选择 plan，再运行：
+
+```
+请创建 src/blocked.ts，内容随便写一句 hello。
+```
+
+预期：write_file 会被 plan mode 拒绝。
+
+切换回 default：
+
+```
+/mode default
+```
+
+再运行：
+
+```
+请读取 package.json，然后尝试执行 echo hello。
+```
+
+预期：读取会自动允许，bash 会询问用户是否批准。
+
+### s08 Hook 系统
+
+**分支：**
+
+- feat/s08
+
+**为什么需要这个功能：**
+
+- agent loop 随着功能的增加会有很多主线外的逻辑
+- 需要有一个机制能够在主线运行的不同时机插入执行不同的动作
+
+**核心功能说明：**
+
+- 新增进程内 HookManager，通过 registerHook 注册 TypeScript hook
+- 支持三个事件：SessionStart、PreToolUse、PostToolUse
+- Hook 可以阻止执行、返回阻止原因、注入消息、改写工具输入
+- 权限检查作为 PreToolUse hook 接入，不再写死在 ToolRuntime
+- todo reminder 保留在 AgentLoop 主流程里
+
+**其他功能说明：**
+
+- Hook 不直接修改 messages，只返回结构化结果
+- 父代理和子代理共享同一个 HookManager
+- 当前单工具执行顺序：PreToolUse -> tool handler -> PostToolUse
+
+**测试指令：**
+
+启动时选择 plan，再运行：
+
+```
+请读取 package.json，然后创建 src/hook-blocked.ts。
+```
+
+预期：读取可以继续，写文件会被权限 hook 阻止。
+
+**注意：block 以后其他 tool 被执行是合法的。**
+
+### s09 记忆系统
+
+**分支：**
+
+- feat/s09
+
+**为什么需要这个功能：**
+
+- 有些信息应该跨会话保留，比如用户偏好、反复出现的反馈、项目里不容易从代码直接推导出的约定
+- 但不是所有上下文都应该进入记忆，代码结构、临时任务状态、当前 TODO 都应该按需重新读取或留在当前会话
+- 记忆系统要解决的是“下次还值得记住”的信息，而不是把聊天记录无差别塞进 prompt
+
+**核心功能说明：**
+
+- 新增 MemoryManager，启动时扫描 .memory/\*.md 并加载记忆
+- 每条记忆是一个带 frontmatter 的 Markdown 文件，MEMORY.md 是自动重建的索引
+- 支持四类记忆：user、feedback、project、reference
+- 新增 save_memory 工具，模型可以在合适时保存跨会话信息
+- system prompt 每轮都会重新构建，所以本轮刚保存的记忆会在下一轮可见
+
+_注：真实设计可以通过 search_memory 动态加载记忆_
+
+**其他功能说明：**
+
+- 新增 /memories 命令，用来查看当前进程已加载的记忆列表
+- 新增 DreamConsolidator 骨架，用于后续合并、去重、裁剪记忆
+
+**测试指令：**
+
+先运行：
+
+```
+请记住：我更喜欢 TypeScript 代码里用清晰的小模块，而不是把所有逻辑堆在一个大文件里。
+```
+
+预期：模型应该调用 save_memory，在 .memory 下生成对应 Markdown 文件，并重建 .memory/MEMORY.md。
+
+然后运行：
+
+```
+/memories
+```
+
+预期：能看到刚保存的记忆。
+
+再次运行：
+
+```
+根据你记住的偏好，简单说一下以后实现功能时应该注意什么。
+```
+
+预期：模型会参考刚写入的记忆回答。
+
+### s10 系统提示词
+
+**分支：**
+
+- feat/s10
+
+**为什么需要这个功能：**
+
+- system prompt 不应该是一整段难维护的大字符串
+- 随着 skill、memory、CLAUDE.md、动态上下文增加，需要有清晰的组装边界
+
+**核心功能说明：**
+
+- 新增 System Prompt Construction 思路，把提示词拆成独立 section
+- 当前包含 core instructions、skill metadata、memory section、CLAUDE.md chain、dynamic context
+- 使用 DYNAMIC_BOUNDARY 标记稳定内容和动态内容的分界
+- **每一轮的 system prompt 都是重新构建的**
+
+**其他功能说明：**
+
+- 新增 /prompt 命令，用来查看完整组装后的 system prompt
+- 新增 /sections 命令，用来查看当前 system prompt 的主要分段
+- per-turn reminder 使用 system-reminder 形式注入，不混进稳定 system prompt
+
+**测试指令：**
+
+```
+/sections
+```
+
+预期：能看到当前 system prompt 的分段标题和 DYNAMIC_BOUNDARY。
+
+```
+/prompt
+```
+
+预期：能看到完整组装后的 system prompt。
+
+### s11 错误恢复
+
+**分支：**
+
+- feat/s11
+
+**为什么需要这个功能：**
+
+- agent 不应该因为一次输出截断、上下文过长或临时网络错误就直接崩掉
+- 错误恢复的目标是让主循环在可恢复场景下自动调整并继续工作
+
+**核心功能说明：**
+
+- stop reason 命中 `max_tokens/length` 时，注入 continuation message 并继续生成（_这种情况下其实就是 output 太长被截断了，让模型继续输出就好了_）
+- prompt 过长时，触发 compactHistory 压缩历史后重试
+- 连接错误、限流、临时服务错误时，使用指数退避重试
+- compact 自身失败时会写入降级摘要，避免恢复流程二次崩溃
+
+### s12 任务系统
+
+**分支：**
+
+- feat/s12
+
+**为什么需要这个功能：**
+
+- 当前会话里的计划会随着上下文压缩或会话结束丢失
+- 有些工作项需要持久保存，并且表达前后依赖关系
+
+**核心功能说明：**
+
+- 新增 TaskManager，任务以 JSON 文件保存在 .tasks/task\_<id>.json
+- 新增 task_create、task_update、task_list、task_get 工具
+- 每个任务包含 id、subject、description、status、blockedBy、blocks、owner
+- 支持 blockedBy / blocks 依赖图
+- 完成某个任务后，会从其他任务的 blockedBy 中移除该任务
+
+**其他功能说明：**
+
+- 原来的运行时 todo 工具已由持久任务系统替代
+- 新增 bypass 模式，方便运行验证
+- system prompt 对 task 的使用新增了说明约束
+
+### s13 后台任务
+
+**分支：**
+
+- feat/s13
+
+**为什么需要这个功能：**
+
+- 有些命令运行时间比较长，如果用普通 bash，会阻塞整个 agent loop
+- 后台任务允许慢命令先启动，模型继续做其他工作，等结果完成后再回到上下文里
+
+**核心功能说明：**
+
+- 新增 BackgroundManager，用来管理运行时后台执行槽
+- 新增 background_run 工具，启动后台命令并立即返回 task_id
+- 新增 check_background 工具，查看某个后台任务或列出全部后台任务
+- 后台任务状态会写入 .runtime-tasks/<id>.json，完整输出写入 .runtime-tasks/<id>.log
+- 每次模型调用前，AgentLoop 会 drain 后台完成通知，并以 background-results 注入上下文
+
+**当前功能局限：**
+
+- loop 不会自动等待强依赖任务完成，模型需要使用 check_background 判断是否可以继续
+- 当前没有 wait_background、取消任务、任务调度器或 worker pool
+
+### s14 - s19
+
+> 后面的章节都是边缘设计了，没有必要再写一遍了，只学关键概念即可，最终核心还是要回到 ClaudeCode 每个模块的实现策略上面。
+
+#### s14 定时调度
+
+定时调度的任务被执行的逻辑还是跟前面后台任务一样，后台检查器每分钟检查一下是否匹配，如果匹配把 prompt 放进通知队列，然后主循环下一轮把它当成用户消息喂给模型。
+
+这里的案例是直接把定时任务参与到主 loop 去，一般连续推理会这么处理。但是对于大多数系统定时任务，还是在自己的 worker 里面来处理。
+
+#### s15 - s18
+
+- s15 Agent 团队：teammate 的线程是由 lead 通过 spawn_teammate 创建出来的。创建时，系统会在 .team/config.json 中写入或更新一份成员记录，用来保存这个 teammate 的名称、角色和当前状态。lead 和 teammate 之间不直接共享上下文，而是通过各自的 inbox 文件进行异步通信：发送方把消息追加写入接收方对应的 .team/inbox/{name}.jsonl，接收方则在自己的 loop 中选择合适的时机读取并清空 inbox，再把读到的消息注入到自己的 messages 里继续处理。
+
+- s16 团队协议：在 inbox 通信的基础上扩展了 request 机制。inbox 仍然负责异步传递消息，request 则用来持久化和追踪某个协作流程的状态，比如它是谁发起的、发给谁、当前是 pending 还是 approved/rejected，以及最终的反馈或处理结果。
+
+```
+创建 request JSON
+  ↓
+往对方 inbox 写一条带 request_id 的消息
+  ↓
+对方读 inbox 后处理
+  ↓
+更新 request JSON 的状态
+  ↓
+再往发起方 inbox 写 response 消息
+```
+
+- s17 自主代理：新增一种任务认领的模式，原来任务需要 lead 派发，现在多了一个共享任务板，teammate 在 idle 的时候去共享任务板认领可以执行的原子任务。
+
+- s18 Worktree 隔离：这其实就是在利用 git Worktree 的能力来实现一个 git 仓库下同时有多个工作区可以并行做不同的事情。普通使用 branch 时，一个 Git 工作目录同一时刻只能 checkout 到一个 branch。你要切到另一个 branch，就会改变当前目录里的文件状态。git worktree 则允许同一个仓库同时拥有多个工作目录，每个 worktree 可以 checkout 到不同的 branch。这样就相当于把多条 branch 同时“展开”成多个可编辑目录，实现并行工作的效果。
+
+-s19 MCP 和插件：概念之前就有了，忽略

@@ -9,13 +9,20 @@ import { fileURLToPath } from "node:url";
 import { config as loadEnvFile } from "dotenv";
 
 import { AgentLoop } from "./agent-loop";
+import { BackgroundManager } from "./background-manager";
 import { MESSAGE_TRACE_PATH, SKILLS_DIR, WORKDIR } from "./config";
 import { CompactManager } from "./compact-manager";
+import { HookManager } from "./hook-manager";
+import { MemoryManager } from "./memory-manager";
 import { MessageCodec } from "./message-codec";
 import { ModelClient } from "./model-client";
+import {
+    handlePermissionCommand,
+    installPermissionSystem,
+} from "./permission-cli";
 import { PromptBuilder } from "./prompt-builder";
 import { SkillRegistry } from "./skill-registry";
-import { TodoManager } from "./todo-manager";
+import { TaskManager } from "./task-manager";
 import type { Message } from "./types";
 
 function loadDotEnv(path = ".env"): void {
@@ -35,7 +42,7 @@ function writeMessageTrace(messages: Message[]): void {
 async function readQuery(
     rl: ReturnType<typeof createInterface>,
 ): Promise<string> {
-    const firstLine = await rl.question("\x1b[36ms06 >> \x1b[0m");
+    const firstLine = await rl.question("\x1b[36ms13 >> \x1b[0m");
     if (firstLine.trim() !== '"""') {
         return firstLine;
     }
@@ -53,7 +60,12 @@ async function readQuery(
     }
 }
 
-function createAgentLoop(): {
+function createAgentLoop(
+    hookManager: HookManager,
+    memoryManager: MemoryManager,
+    taskManager: TaskManager,
+    backgroundManager: BackgroundManager,
+): {
     agentLoop: AgentLoop;
     messageCodec: MessageCodec;
 } {
@@ -61,15 +73,17 @@ function createAgentLoop(): {
     const modelClient = new ModelClient(messageCodec);
     const compactManager = new CompactManager(modelClient, messageCodec);
     const skillRegistry = new SkillRegistry(SKILLS_DIR);
-    const todoManager = new TodoManager();
     const promptBuilder = new PromptBuilder();
     const agentLoop = new AgentLoop({
         promptBuilder,
         skillRegistry,
-        todoManager,
         messageCodec,
         modelClient,
         compactManager,
+        backgroundManager,
+        memoryManager,
+        taskManager,
+        hookManager,
     });
 
     return { agentLoop, messageCodec };
@@ -78,15 +92,81 @@ function createAgentLoop(): {
 async function main(): Promise<void> {
     loadDotEnv();
 
+    const memoryManager = new MemoryManager();
+    memoryManager.loadAll();
+    if (memoryManager.count() > 0) {
+        console.log(`[${memoryManager.count()} memories loaded into context]`);
+    } else {
+        console.log(
+            "[No existing memories. The agent can create them with save_memory.]",
+        );
+    }
+
     const history: Message[] = [];
-    const { agentLoop, messageCodec } = createAgentLoop();
+    const backgroundManager = new BackgroundManager();
+    const taskManager = new TaskManager();
     const rl = createInterface({ input, output });
 
     try {
+        const hookManager = new HookManager();
+        const permissionManager = await installPermissionSystem(
+            rl,
+            hookManager,
+        );
+        const { agentLoop, messageCodec } = createAgentLoop(
+            hookManager,
+            memoryManager,
+            taskManager,
+            backgroundManager,
+        );
+        const fullPrompt = agentLoop.parentSystemPrompt();
+        console.log(
+            `[System prompt assembled: ${fullPrompt.length} chars, ~${agentLoop.systemPromptSections().length} sections]`,
+        );
+        console.log("[Persistent tasks enabled: .tasks/task_<id>.json]");
+        console.log("[Background tasks enabled: .runtime-tasks/<id>.json]");
+        console.log(
+            "[Error recovery enabled: max_tokens / prompt_too_long / connection backoff]",
+        );
+        const sessionStartResult = await hookManager.runHooks("SessionStart", {
+            source: "startup",
+        });
+        for (const message of sessionStartResult.messages ?? []) {
+            history.push({
+                role: "user",
+                content: `[Hook message]: ${message}`,
+            });
+        }
         while (true) {
             const query = await readQuery(rl);
             if (["q", "exit", ""].includes(query.trim().toLowerCase())) {
                 break;
+            }
+            if (query.trim() === "/memories") {
+                const memories = memoryManager.list();
+                if (memories.length > 0) {
+                    for (const memory of memories) {
+                        console.log(memory);
+                    }
+                } else {
+                    console.log("  (no memories)");
+                }
+                continue;
+            }
+            if (query.trim() === "/prompt") {
+                console.log("--- System Prompt ---");
+                console.log(agentLoop.parentSystemPrompt());
+                console.log("--- End ---");
+                continue;
+            }
+            if (query.trim() === "/sections") {
+                for (const section of agentLoop.systemPromptSections()) {
+                    console.log(`  ${section}`);
+                }
+                continue;
+            }
+            if (handlePermissionCommand(query, permissionManager)) {
+                continue;
             }
 
             const turnStartIndex = history.length;

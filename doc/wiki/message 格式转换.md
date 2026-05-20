@@ -77,7 +77,7 @@ type ContentBlock =
 - toOpenAIMessages
     - 把 role=system 的 prompt 添加进去
     - normalizeMessages 处理清理和调整内部消息
-        - 清理 block 里的元数据，_开头的字段全去掉
+        - 清理 block 里的元数据，\_开头的字段全去掉
         - tool_use 缺失对应 tool_result，补一条
         - 合并相邻同 role 的消息
     - .flatMap(contentBlocksToOpenAIMessage) 转换成 OpenAI message

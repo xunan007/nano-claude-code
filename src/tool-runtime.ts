@@ -5,9 +5,12 @@ import { dirname, isAbsolute, relative, resolve } from "node:path";
 import type { ChatCompletionTool } from "openai/resources/chat/completions";
 
 import { BASH_TIMEOUT_MS, WORKDIR } from "./config";
+import type { BackgroundManager } from "./background-manager";
 import type { CompactManager } from "./compact-manager";
+import type { HookManager, PreToolUseContext } from "./hook-manager";
+import { MEMORY_TYPES, type MemoryManager } from "./memory-manager";
 import type { SkillRegistry } from "./skill-registry";
-import type { TodoManager } from "./todo-manager";
+import type { TaskManager } from "./task-manager";
 import type { ContentBlock } from "./types";
 
 type ToolHandler = (
@@ -23,7 +26,10 @@ type ToolEntry = {
 type ToolRuntimeOptions = {
     compactManager: CompactManager;
     skillRegistry: SkillRegistry;
-    todoManager?: TodoManager;
+    backgroundManager?: BackgroundManager;
+    memoryManager?: MemoryManager;
+    taskManager?: TaskManager;
+    hookManager?: HookManager | undefined;
     runSubagent?: (prompt: string) => Promise<string>;
     enableCompactTool?: boolean;
 };
@@ -108,36 +114,36 @@ const FILE_TOOL_DEFINITIONS: ChatCompletionTool[] = [
     },
 ];
 
-const TODO_TOOL_DEFINITION: ChatCompletionTool = {
+const SAVE_MEMORY_TOOL_DEFINITION: ChatCompletionTool = {
     type: "function",
     function: {
-        name: "todo",
-        description: "Rewrite the current session plan for multi-step work.",
+        name: "save_memory",
+        description: "Save a persistent memory that survives across sessions.",
         parameters: {
             type: "object",
             properties: {
-                items: {
-                    type: "array",
-                    items: {
-                        type: "object",
-                        properties: {
-                            content: { type: "string" },
-                            status: {
-                                type: "string",
-                                enum: ["pending", "in_progress", "completed"],
-                            },
-                            activeForm: {
-                                type: "string",
-                                description:
-                                    "Optional present-continuous label.",
-                            },
-                        },
-                        required: ["content", "status"],
-                        additionalProperties: false,
-                    },
+                name: {
+                    type: "string",
+                    description:
+                        "Short identifier (e.g. prefer_tabs, db_schema)",
+                },
+                description: {
+                    type: "string",
+                    description:
+                        "One-line summary of what this memory captures",
+                },
+                type: {
+                    type: "string",
+                    enum: [...MEMORY_TYPES],
+                    description:
+                        "user=preferences, feedback=corrections, project=non-obvious project conventions or decision reasons, reference=external resource pointers",
+                },
+                content: {
+                    type: "string",
+                    description: "Full memory content (multi-line OK)",
                 },
             },
-            required: ["items"],
+            required: ["name", "description", "type", "content"],
             additionalProperties: false,
         },
     },
@@ -183,17 +189,188 @@ const COMPACT_TOOL_DEFINITION: ChatCompletionTool = {
     },
 };
 
+const PERSISTENT_TASK_TOOL_DEFINITIONS: ChatCompletionTool[] = [
+    {
+        type: "function",
+        function: {
+            name: "task_create",
+            description: "Create a new task.",
+            parameters: {
+                type: "object",
+                properties: {
+                    subject: { type: "string" },
+                    description: { type: "string" },
+                },
+                required: ["subject"],
+                additionalProperties: false,
+            },
+        },
+    },
+    {
+        type: "function",
+        function: {
+            name: "task_update",
+            description:
+                "Update a task's status, owner, or dependencies. addBlockedBy adds prerequisites to this task and updates each prerequisite's blocks list. addBlocks records tasks unlocked by this task and also adds this task to each blocked task's blockedBy list.",
+            parameters: {
+                type: "object",
+                properties: {
+                    task_id: { type: "integer" },
+                    status: {
+                        type: "string",
+                        enum: [
+                            "pending",
+                            "in_progress",
+                            "completed",
+                            "deleted",
+                        ],
+                    },
+                    owner: {
+                        type: "string",
+                        description: "Set when a teammate claims the task",
+                    },
+                    addBlockedBy: {
+                        type: "array",
+                        items: { type: "integer" },
+                    },
+                    addBlocks: {
+                        type: "array",
+                        items: { type: "integer" },
+                    },
+                },
+                required: ["task_id"],
+                additionalProperties: false,
+            },
+        },
+    },
+    {
+        type: "function",
+        function: {
+            name: "task_list",
+            description:
+                "List tasks with status, blockedBy, and blocks. After new tasks are created in the current process, this lists that current task set to avoid old task pollution.",
+            parameters: {
+                type: "object",
+                properties: {},
+                additionalProperties: false,
+            },
+        },
+    },
+    {
+        type: "function",
+        function: {
+            name: "task_get",
+            description: "Get full details of a task by ID.",
+            parameters: {
+                type: "object",
+                properties: {
+                    task_id: { type: "integer" },
+                },
+                required: ["task_id"],
+                additionalProperties: false,
+            },
+        },
+    },
+];
+
+const BACKGROUND_TOOL_DEFINITIONS: ChatCompletionTool[] = [
+    {
+        type: "function",
+        function: {
+            name: "background_run",
+            description:
+                "Run command in background thread. Returns task_id immediately.",
+            parameters: {
+                type: "object",
+                properties: {
+                    command: { type: "string" },
+                },
+                required: ["command"],
+                additionalProperties: false,
+            },
+        },
+    },
+    {
+        type: "function",
+        function: {
+            name: "check_background",
+            description:
+                "Check background task status. Omit task_id to list all.",
+            parameters: {
+                type: "object",
+                properties: {
+                    task_id: { type: "string" },
+                },
+                additionalProperties: false,
+            },
+        },
+    },
+];
+
 export class ToolRuntime {
     private readonly entries = new Map<string, ToolEntry>();
 
     constructor(private readonly options: ToolRuntimeOptions) {
         this.registerBaseTools();
-        if (options.todoManager) {
+        if (options.memoryManager) {
             this.register(
-                TODO_TOOL_DEFINITION,
+                SAVE_MEMORY_TOOL_DEFINITION,
                 (input) =>
-                    options.todoManager?.update(requireArray(input, "items")) ??
-                    "No todo manager configured",
+                    options.memoryManager?.saveMemory(
+                        requireString(input, "name"),
+                        requireString(input, "description"),
+                        requireString(input, "type"),
+                        requireString(input, "content"),
+                    ) ?? "No memory manager configured",
+            );
+        }
+        if (options.taskManager) {
+            this.register(
+                PERSISTENT_TASK_TOOL_DEFINITIONS[0]!,
+                (input) =>
+                    options.taskManager?.create(
+                        requireString(input, "subject"),
+                        optionalString(input, "description") ?? "",
+                    ) ?? "No task manager configured",
+            );
+            this.register(
+                PERSISTENT_TASK_TOOL_DEFINITIONS[1]!,
+                (input) =>
+                    options.taskManager?.update(
+                        requireNumber(input, "task_id"),
+                        optionalString(input, "status"),
+                        optionalString(input, "owner"),
+                        optionalNumberArray(input, "addBlockedBy"),
+                        optionalNumberArray(input, "addBlocks"),
+                    ) ?? "No task manager configured",
+            );
+            this.register(
+                PERSISTENT_TASK_TOOL_DEFINITIONS[2]!,
+                () =>
+                    options.taskManager?.listAll() ??
+                    "No task manager configured",
+            );
+            this.register(
+                PERSISTENT_TASK_TOOL_DEFINITIONS[3]!,
+                (input) =>
+                    options.taskManager?.get(requireNumber(input, "task_id")) ??
+                    "No task manager configured",
+            );
+        }
+        if (options.backgroundManager) {
+            this.register(
+                BACKGROUND_TOOL_DEFINITIONS[0]!,
+                (input) =>
+                    options.backgroundManager?.run(
+                        requireString(input, "command"),
+                    ) ?? "No background manager configured",
+            );
+            this.register(
+                BACKGROUND_TOOL_DEFINITIONS[1]!,
+                (input) =>
+                    options.backgroundManager?.check(
+                        optionalString(input, "task_id"),
+                    ) ?? "No background manager configured",
             );
         }
         if (options.runSubagent) {
@@ -233,11 +410,44 @@ export class ToolRuntime {
                 continue;
             }
 
+            const toolContext: PreToolUseContext = {
+                toolName: block.name,
+                toolInput: { ...block.input },
+                toolUseId: block.id,
+            };
+            const preResult = await this.options.hookManager?.runHooks(
+                "PreToolUse",
+                toolContext,
+            );
+            if (preResult) {
+                for (const message of preResult.messages ?? []) {
+                    results.push({
+                        type: "tool_result",
+                        tool_use_id: block.id,
+                        content: `[Hook message]: ${message}`,
+                    });
+                }
+                if (preResult.blocked) {
+                    const reason =
+                        preResult.blockReason ??
+                        "Tool blocked by PreToolUse hook";
+                    results.push({
+                        type: "tool_result",
+                        tool_use_id: block.id,
+                        content: reason,
+                    });
+                    continue;
+                }
+            }
+
             const entry = this.entries.get(block.name);
             const handlerResult = entry
                 ? await (async () => {
                       try {
-                          return await entry.handler(block.input, block.id);
+                          return await entry.handler(
+                              toolContext.toolInput,
+                              block.id,
+                          );
                       } catch (error: unknown) {
                           return `Error: ${
                               error instanceof Error
@@ -253,10 +463,24 @@ export class ToolRuntime {
             }
             console.log(handlerResult.slice(0, 200));
 
+            const postResult = await this.options.hookManager?.runHooks(
+                "PostToolUse",
+                {
+                    ...toolContext,
+                    toolOutput: handlerResult,
+                },
+            );
+            const hookNotes = (postResult?.messages ?? [])
+                .map((message) => `[Hook note]: ${message}`)
+                .join("\n");
+            const resultContent = hookNotes
+                ? `${handlerResult}\n${hookNotes}`
+                : handlerResult;
+
             results.push({
                 type: "tool_result",
                 tool_use_id: block.id,
-                content: handlerResult,
+                content: resultContent,
             });
         }
 
@@ -314,11 +538,6 @@ export class ToolRuntime {
     }
 
     private runBash(command: string, toolUseId: string): string {
-        const dangerous = ["rm -rf /", "sudo", "shutdown", "reboot", "> /dev/"];
-        if (dangerous.some((item) => command.includes(item))) {
-            return "Error: Dangerous command blocked";
-        }
-
         const result = spawnSync(command, {
             shell: true,
             cwd: WORKDIR,
@@ -411,10 +630,41 @@ function optionalNumber(
     return value;
 }
 
-function requireArray(input: Record<string, unknown>, key: string): unknown[] {
+function requireNumber(input: Record<string, unknown>, key: string): number {
     const value = input[key];
-    if (!Array.isArray(value)) {
-        throw new Error(`${key} must be an array`);
+    if (typeof value !== "number") {
+        throw new Error(`${key} must be a number`);
+    }
+    return value;
+}
+
+function optionalString(
+    input: Record<string, unknown>,
+    key: string,
+): string | undefined {
+    const value = input[key];
+    if (value === undefined) {
+        return undefined;
+    }
+    if (typeof value !== "string") {
+        throw new Error(`${key} must be a string`);
+    }
+    return value;
+}
+
+function optionalNumberArray(
+    input: Record<string, unknown>,
+    key: string,
+): number[] | undefined {
+    const value = input[key];
+    if (value === undefined) {
+        return undefined;
+    }
+    if (
+        !Array.isArray(value) ||
+        value.some((item) => typeof item !== "number")
+    ) {
+        throw new Error(`${key} must be an array of numbers`);
     }
     return value;
 }
