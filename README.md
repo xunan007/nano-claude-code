@@ -493,3 +493,37 @@ _注：真实设计可以通过 search_memory 动态加载记忆_
 
 - loop 不会自动等待强依赖任务完成，模型需要使用 check_background 判断是否可以继续
 - 当前没有 wait_background、取消任务、任务调度器或 worker pool
+
+### s14 - s19
+
+> 后面的章节都是边缘设计了，没有必要再写一遍了，只学关键概念即可，最终核心还是要回到 ClaudeCode 每个模块的实现策略上面。
+
+#### s14 定时调度
+
+定时调度的任务被执行的逻辑还是跟前面后台任务一样，后台检查器每分钟检查一下是否匹配，如果匹配把 prompt 放进通知队列，然后主循环下一轮把它当成用户消息喂给模型。
+
+这里的案例是直接把定时任务参与到主 loop 去，一般连续推理会这么处理。但是对于大多数系统定时任务，还是在自己的 worker 里面来处理。
+
+#### s15 - s18
+
+- s15 Agent 团队：teammate 的线程是由 lead 通过 spawn_teammate 创建出来的。创建时，系统会在 .team/config.json 中写入或更新一份成员记录，用来保存这个 teammate 的名称、角色和当前状态。lead 和 teammate 之间不直接共享上下文，而是通过各自的 inbox 文件进行异步通信：发送方把消息追加写入接收方对应的 .team/inbox/{name}.jsonl，接收方则在自己的 loop 中选择合适的时机读取并清空 inbox，再把读到的消息注入到自己的 messages 里继续处理。
+
+- s16 团队协议：在 inbox 通信的基础上扩展了 request 机制。inbox 仍然负责异步传递消息，request 则用来持久化和追踪某个协作流程的状态，比如它是谁发起的、发给谁、当前是 pending 还是 approved/rejected，以及最终的反馈或处理结果。
+
+```
+创建 request JSON
+  ↓
+往对方 inbox 写一条带 request_id 的消息
+  ↓
+对方读 inbox 后处理
+  ↓
+更新 request JSON 的状态
+  ↓
+再往发起方 inbox 写 response 消息
+```
+
+- s17 自主代理：新增一种任务认领的模式，原来任务需要 lead 派发，现在多了一个共享任务板，teammate 在 idle 的时候去共享任务板认领可以执行的原子任务。
+
+- s18 Worktree 隔离：这其实就是在利用 git Worktree 的能力来实现一个 git 仓库下同时有多个工作区可以并行做不同的事情。普通使用 branch 时，一个 Git 工作目录同一时刻只能 checkout 到一个 branch。你要切到另一个 branch，就会改变当前目录里的文件状态。git worktree 则允许同一个仓库同时拥有多个工作目录，每个 worktree 可以 checkout 到不同的 branch。这样就相当于把多条 branch 同时“展开”成多个可编辑目录，实现并行工作的效果。
+
+-s19 MCP 和插件：概念之前就有了，忽略
