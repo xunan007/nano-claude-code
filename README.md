@@ -29,7 +29,7 @@
 
 **最后，作为一份学习材料，这个课程已经足够优秀。**
 
-## 如何运行
+## API 配置
 
 - 在当前目录下创建 .env 文件：touch .env
 - 填入 DEEPSEEK_API_KEY/DEEPSEEK_MODEL_ID/DEEPSEEK_BASE_URL
@@ -553,4 +553,4 @@ _注：真实设计可以通过 search_memory 动态加载记忆_
 
 - s18 Worktree 隔离：这其实就是在利用 git Worktree 的能力来实现一个 git 仓库下同时有多个工作区可以并行做不同的事情。普通使用 branch 时，一个 Git 工作目录同一时刻只能 checkout 到一个 branch。你要切到另一个 branch，就会改变当前目录里的文件状态。git worktree 则允许同一个仓库同时拥有多个工作目录，每个 worktree 可以 checkout 到不同的 branch。这样就相当于把多条 branch 同时“展开”成多个可编辑目录，实现并行工作的效果。
 
--s19 MCP 和插件：概念之前就有了，忽略
+- s19 MCP 和插件：概念之前就有了，忽略
